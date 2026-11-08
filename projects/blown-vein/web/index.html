@@ -1,0 +1,209 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas><script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+const W=1080,H=1920,FPS=30,DUR=36.45;
+const renderer=new THREE.WebGLRenderer({canvas:document.getElementById('c'),antialias:true,preserveDrawingBuffer:true});
+renderer.setSize(W,H,false); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.05;
+document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+{ const c=document.createElement('canvas'); c.width=16; c.height=256; const g=c.getContext('2d');
+  const gr=g.createLinearGradient(0,0,0,256); gr.addColorStop(0,'#7ec8f7'); gr.addColorStop(0.55,'#4aa8e8'); gr.addColorStop(1,'#2b7fc9');
+  g.fillStyle=gr; g.fillRect(0,0,16,256); const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; scene.background=tex; }
+const camera=new THREE.PerspectiveCamera(48,W/H,0.05,100);
+scene.add(new THREE.HemisphereLight(0xcfe8ff,0x2a5a8a,0.95));
+const key=new THREE.DirectionalLight(0xffffff,2.2); key.position.set(3,6,4); key.castShadow=true; scene.add(key);
+const rim=new THREE.DirectionalLight(0xbfe0ff,0.9); rim.position.set(-4,3,-3); scene.add(rim);
+const ground=new THREE.Mesh(new THREE.CircleGeometry(9,40),new THREE.MeshStandardMaterial({color:0x63b6ec,roughness:1}));
+ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+
+/* ---------- helpers ---------- */
+function skinTexture(){ const c=document.createElement('canvas'); c.width=c.height=512; const g=c.getContext('2d');
+  g.fillStyle='#e8b795'; g.fillRect(0,0,512,512);
+  for(let i=0;i<2600;i++){ g.fillStyle=`rgba(${140+Math.random()*60|0},${80+Math.random()*40|0},50,${Math.random()*0.08})`; g.fillRect(Math.random()*512,Math.random()*512,2,2); }
+  for(let i=0;i<380;i++){ g.strokeStyle=`rgba(90,55,30,${0.10+Math.random()*0.16})`; g.lineWidth=1; const x=Math.random()*512,y=Math.random()*512; g.beginPath(); g.moveTo(x,y); g.lineTo(x+(Math.random()-0.5)*7,y+3+Math.random()*5); g.stroke(); }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; t.wrapS=t.wrapT=THREE.RepeatWrapping; return t; }
+function makeSyringe(){ const s=new THREE.Group();
+  const barrel=new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.075,0.52,20),new THREE.MeshPhysicalMaterial({color:0xeaf4fa,roughness:0.12,transparent:true,opacity:0.5})); barrel.position.y=0.63; s.add(barrel);
+  const fluid=new THREE.Mesh(new THREE.CylinderGeometry(0.062,0.062,0.30,16),new THREE.MeshStandardMaterial({color:0xf2f5f6,roughness:0.4})); fluid.position.y=0.55; s.add(fluid);
+  const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.018,0.052,0.11,14),new THREE.MeshStandardMaterial({color:0x22b573,roughness:0.35})); hub.position.y=0.315; s.add(hub);
+  const needle=new THREE.Mesh(new THREE.CylinderGeometry(0.006,0.0012,0.37,8),new THREE.MeshStandardMaterial({color:0xd7dde2,metalness:0.9,roughness:0.25})); needle.position.y=0.185; s.add(needle);
+  const rod=new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.30,10),new THREE.MeshStandardMaterial({color:0xdfe6ea,roughness:0.4})); rod.position.y=1.02; s.add(rod);
+  const thumb=new THREE.Mesh(new THREE.CylinderGeometry(0.085,0.085,0.025,16),new THREE.MeshStandardMaterial({color:0xe8eef1,roughness:0.4})); thumb.position.y=1.17; s.add(thumb);
+  s.traverse(o=>{o.castShadow=true;}); return s; }
+const Rprof=u=>0.46*(1-u)+0.30*u+Math.sin(u*Math.PI)*0.05;
+function makeArm(variant){ const grp=new THREE.Group(); const refs={};
+  const pts=[]; for(let i=0;i<=14;i++){ const u=i/14; pts.push(new THREE.Vector2(Math.max(Rprof(u),0.02),-1.35+u*2.7)); }
+  const geo=new THREE.LatheGeometry(pts,36);
+  let mat;
+  if(variant==='xray') mat=new THREE.MeshPhysicalMaterial({color:0x9fd4f2,roughness:0.35,transparent:true,opacity:0.30});
+  else mat=new THREE.MeshPhysicalMaterial({map:skinTexture(),roughness:0.48});
+  const arm=new THREE.Mesh(geo,mat); arm.rotation.z=Math.PI/2; arm.castShadow=true; grp.add(arm);
+  const vPts=[]; for(let i=0;i<=10;i++){ const x=-1.25+i*0.25; vPts.push(new THREE.Vector3(x,0.155+Math.sin(i*0.7)*0.012,0)); }
+  const veinCurve=new THREE.CatmullRomCurve3(vPts);
+  const aPts=vPts.map(p=>new THREE.Vector3(p.x,-0.14,p.z-0.02)); const artCurve=new THREE.CatmullRomCurve3(aPts);
+  if(variant==='xray'){
+    const vein=new THREE.Mesh(new THREE.TubeGeometry(veinCurve,40,0.062,12),new THREE.MeshPhysicalMaterial({color:0x1c46c8,roughness:0.2,transparent:true,opacity:0.85})); grp.add(vein);
+    const art=new THREE.Mesh(new THREE.TubeGeometry(artCurve,40,0.048,12),new THREE.MeshStandardMaterial({color:0xd63030,roughness:0.3})); grp.add(art);
+    const cg=new THREE.SphereGeometry(0.040,10,8); cg.scale(1,0.45,1);
+    const cells=new THREE.InstancedMesh(cg,new THREE.MeshStandardMaterial({color:0xc22323,roughness:0.35}),130);
+    const base=[]; for(let i=0;i<130;i++) base.push(Math.random());
+    refs.cells=cells; refs.cellBase=base; refs.veinCurve=veinCurve; grp.add(cells);
+    const pool=new THREE.Group(); for(let i=0;i<26;i++){ const b=new THREE.Mesh(new THREE.SphereGeometry(0.02+Math.random()*0.035,8,8),new THREE.MeshStandardMaterial({color:0xa81f1f,roughness:0.3}));
+      b.position.set(0.30+(Math.random()-0.5)*0.28,0.045-(Math.random())*0.11,(Math.random()-0.5)*0.22); pool.add(b); }
+    grp.add(pool); refs.pool=pool;
+  } else {
+    const sp=[]; for(let i=0;i<=8;i++){ const x=-1.2+i*0.3; const u=(1.35-x)/2.7; sp.push(new THREE.Vector3(x,Rprof(u)-0.02,0.03+Math.sin(i*1.3)*0.012)); }
+    const sv=new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(sp),32,0.02,8),new THREE.MeshPhysicalMaterial({color:0x9db8dd,roughness:0.35,transparent:true,opacity:0.5}));
+    grp.add(sv); refs.surfVein=sv;
+  }
+  if(variant==='bruise'){
+    const bc=document.createElement('canvas'); bc.width=bc.height=128; const bg2=bc.getContext('2d');
+    const grd=bg2.createRadialGradient(64,64,4,64,64,62); grd.addColorStop(0,'rgba(255,255,255,0.95)'); grd.addColorStop(0.55,'rgba(255,255,255,0.55)'); grd.addColorStop(1,'rgba(255,255,255,0)');
+    bg2.fillStyle=grd; bg2.fillRect(0,0,128,128); const bt=new THREE.CanvasTexture(bc);
+    const pp=[]; for(let i=0;i<=12;i++){ const v=i/12; pp.push(new THREE.Vector2(Math.max(Rprof(0.5+(v-0.5)*0.30)+0.014,0.02),-0.42+v*0.84)); }
+    const pm=new THREE.Mesh(new THREE.LatheGeometry(pp,20,0.62,1.1),new THREE.MeshStandardMaterial({map:bt,color:0x4a1460,transparent:true,opacity:0,roughness:0.6}));
+    pm.rotation.z=Math.PI/2; grp.add(pm); refs.patch=pm;
+    const lump=new THREE.Mesh(new THREE.SphereGeometry(0.30,20,14),new THREE.MeshPhysicalMaterial({color:0xbd8a6e,roughness:0.5}));
+    lump.scale.set(0.95,0.20,0.7); lump.position.set(0.30,0.375,0.02); grp.add(lump); refs.lump=lump;
+    const dot=new THREE.Mesh(new THREE.CircleGeometry(0.02,10),new THREE.MeshBasicMaterial({color:0x6b4a3a}));
+    dot.position.set(0.03,0.415,0.10); dot.rotation.x=-0.5; grp.add(dot); refs.dot=dot;
+  }
+  if(variant==='surf'){
+    const lump=new THREE.Mesh(new THREE.SphereGeometry(0.30,20,14),new THREE.MeshPhysicalMaterial({map:skinTexture(),roughness:0.5}));
+    lump.scale.set(0.001,0.001,0.001); lump.position.set(0.20,0.38,0.02); grp.add(lump); refs.swlump=lump;
+  }
+  return {grp,refs};
+}
+function flowCells(refs,t,speed){ if(!refs.cells) return; const m=new THREE.Matrix4(),q=new THREE.Quaternion(),sc=new THREE.Vector3(1,1,1);
+  for(let i=0;i<130;i++){ const u=(refs.cellBase[i]+t*speed)%1; const p=refs.veinCurve.getPoint(u);
+    p.x+=(Math.sin(i*12.9)*0.03); p.y+=(Math.cos(i*7.7)*0.028); p.z+=(Math.sin(i*5.3)*0.03);
+    m.compose(p,q,sc); refs.cells.setMatrixAt(i,m); } refs.cells.instanceMatrix.needsUpdate=true; }
+
+/* ---------- groups ---------- */
+const G={};
+function group(name){ const g=new THREE.Group(); g.visible=false; scene.add(g); G[name]=g; return g; }
+/* SURF: arm on table */
+{ const g=group('surf');
+  const table=new THREE.Mesh(new THREE.BoxGeometry(3.6,0.09,1.5),new THREE.MeshStandardMaterial({color:0xdfe9ee,roughness:0.6}));
+  table.position.y=0.56; table.receiveShadow=true; g.add(table);
+  const A=makeArm('surf'); A.grp.position.y=1.02; g.add(A.grp); G.surfRefs=A.refs;
+  const tq=new THREE.Mesh(new THREE.TorusGeometry(0.465,0.05,10,28),new THREE.MeshStandardMaterial({color:0x2456c8,roughness:0.5}));
+  tq.rotation.y=Math.PI/2; tq.position.set(-0.88,1.02,0); g.add(tq); G.tq=tq;
+  const syr=makeSyringe(); g.add(syr); G.syrSurf=syr;
+  for(let i=0;i<3;i++){ const cb=new THREE.Mesh(new THREE.SphereGeometry(0.055,10,10),new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.9})); cb.position.set(-1.35+i*0.13,0.65,0.45); g.add(cb); }
+  const press=new THREE.Mesh(new THREE.SphereGeometry(0.075,12,10),new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.95}));
+  press.scale.set(1,0.6,1); press.position.set(0.20,1.50,0.02); press.visible=false; g.add(press); G.press=press;
+  const ice=new THREE.Group(); const ib=new THREE.Mesh(new THREE.BoxGeometry(0.36,0.11,0.27),new THREE.MeshPhysicalMaterial({color:0xbfe0f2,roughness:0.25,transparent:true,opacity:0.9})); ice.add(ib);
+  const it=new THREE.Mesh(new THREE.SphereGeometry(0.09,10,8),new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.95})); it.scale.set(1.4,0.4,1); it.position.y=0.08; ice.add(it);
+  ice.position.set(0.05,1.50,0.0); ice.visible=false; g.add(ice); G.ice=ice;
+}
+/* BRUISE arm (own group, same table height) */
+{ const g=group('bruise');
+  const A=makeArm('bruise'); A.grp.position.y=1.02; g.add(A.grp); G.bruiseRefs=A.refs;
+}
+/* XRAY */
+{ const g=group('xray');
+  const A=makeArm('xray'); A.grp.position.y=1.02; g.add(A.grp); G.xrayRefs=A.refs;
+  const syr=makeSyringe(); g.add(syr); G.syrX=syr;
+}
+/* MICRO: inside the vein */
+{ const g=group('micro');
+  const tube=new THREE.Mesh(new THREE.CylinderGeometry(0.9,0.9,4.4,28,1,true),new THREE.MeshPhysicalMaterial({color:0x1c46c8,roughness:0.3,transparent:true,opacity:0.5,side:THREE.DoubleSide}));
+  tube.rotation.z=Math.PI/2; g.add(tube);
+  const hg=new THREE.CircleGeometry(0.30,14); const hp=hg.attributes.position;
+  for(let i=1;i<hp.count;i++){ hp.setX(i,hp.getX(i)*(0.85+Math.random()*0.3)); hp.setY(i,hp.getY(i)*(0.85+Math.random()*0.3)); }
+  const hole=new THREE.Mesh(hg,new THREE.MeshBasicMaterial({color:0x2a0208,side:THREE.DoubleSide}));
+  hole.position.set(0.35,-0.86,0.18); hole.rotation.x=0.35; g.add(hole); G.hole=hole;
+  const cg=new THREE.SphereGeometry(0.11,10,8); cg.scale(1,0.42,1);
+  const cells=new THREE.InstancedMesh(cg,new THREE.MeshStandardMaterial({color:0xc22323,roughness:0.35}),90);
+  const base=[]; for(let i=0;i<90;i++) base.push([Math.random(),(Math.random()-0.5)*1.1,(Math.random()-0.5)*1.1]);
+  g.add(cells); G.microCells=cells; G.microBase=base;
+  const wc=new THREE.InstancedMesh(new THREE.SphereGeometry(0.09,10,8),new THREE.MeshStandardMaterial({color:0xf4f6f8,roughness:0.4}),14);
+  const wb=[]; for(let i=0;i<14;i++) wb.push(Math.random()); g.add(wc); G.whiteCells=wc; G.whiteBase=wb;
+  const pg=new THREE.CylinderGeometry(0.055,0.055,0.018,10);
+  const plats=new THREE.InstancedMesh(pg,new THREE.MeshStandardMaterial({color:0xf0cd85,roughness:0.4}),42);
+  const pb=[]; for(let i=0;i<42;i++) pb.push([(Math.random()-0.5)*3.4,(Math.random()-0.5)*1.2,(Math.random()-0.5)*1.2,Math.random()*Math.PI]);
+  g.add(plats); G.plats=plats; G.platBase=pb;
+  const fpos=[]; for(let i=0;i<26;i++){ const a=(i/26)*Math.PI*2; fpos.push(Math.cos(a)*0.05,-0.80+Math.sin(a)*0.02,0.02, 0.35+Math.cos(a+0.6)*0.26,-0.86+Math.sin(a)*0.10,0.18+Math.sin(a+0.6)*0.20); }
+  const fgeo=new THREE.BufferGeometry(); fgeo.setAttribute('position',new THREE.Float32BufferAttribute(fpos,3));
+  const fib=new THREE.LineSegments(fgeo,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0}));
+  g.add(fib); G.fibrin=fib;
+}
+/* PATIENT */
+{ const g=group('patient'); G.patientInner=new THREE.Group(); g.add(G.patientInner);
+  fetch('./patient.b64').then(r=>r.text()).then(b64=>{ const bin=atob(b64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  const ld=new GLTFLoader(); ld.setMeshoptDecoder(MeshoptDecoder);
+  ld.parse(bytes.buffer,'',gl=>{ gl.scene.traverse(o=>{ o.castShadow=false; o.receiveShadow=false; }); G.patientInner.add(gl.scene); window.__pl=true; },()=>{ window.err='patient parse fail'; });
+}).catch(()=>{ window.err='patient fetch fail'; });
+}
+
+/* ---------- timeline ---------- */
+const clamp01=v=>Math.max(0,Math.min(1,v));
+const ss=u=>{ u=clamp01(u); return u*u*u*(u*(u*6-15)+10); };
+const LP=(a,b,u)=>a+(b-a)*u;
+function syrPlace(s,x,y,z){ s.position.set(x,y,z); s.rotation.z=0.42; s.rotation.x=-0.12; }
+function microFlow(t,speed,white){ const m=new THREE.Matrix4(),e=new THREE.Euler(),q=new THREE.Quaternion(),sc=new THREE.Vector3(1,1,1),p=new THREE.Vector3();
+  for(let i=0;i<90;i++){ const u=(G.microBase[i][0]+t*speed)%1; p.set(-2.1+u*4.2,G.microBase[i][1]*0.62,G.microBase[i][2]*0.62);
+    e.set(0,0,t*0.7+i); q.setFromEuler(e); m.compose(p,q,sc); G.microCells.setMatrixAt(i,m); } G.microCells.instanceMatrix.needsUpdate=true;
+  G.whiteCells.count=white?14:0;
+  if(white){ for(let i=0;i<14;i++){ const u=(G.whiteBase[i]+t*speed*0.7)%1; p.set(-2.1+u*4.2,Math.sin(i*3.1)*0.4,Math.cos(i*2.3)*0.4);
+    q.identity(); m.compose(p,q,sc); G.whiteCells.setMatrixAt(i,m); } G.whiteCells.instanceMatrix.needsUpdate=true; } }
+function platsMode(t,k,cluster){ const m=new THREE.Matrix4(),e=new THREE.Euler(),q=new THREE.Quaternion(),sc=new THREE.Vector3(1,1,1),p=new THREE.Vector3();
+  for(let i=0;i<42;i++){ const b=G.platBase[i];
+    if(cluster||k>0){ const hx=0.35+Math.sin(i*2.7)*0.20, hy=-0.80+Math.cos(i*1.9)*0.10, hz=0.16+Math.sin(i*1.3)*0.14;
+      const fx=((b[0]+t*0.8+2.1)%4.2)-2.1;
+      p.set(LP(fx,hx,ss(k)),LP(b[1]*0.6,hy,ss(k)),LP(b[2]*0.6,hz,ss(k))); }
+    else { p.set(((b[0]+t*0.8+2.1)%4.2)-2.1, b[1]*0.6, b[2]*0.6); }
+    e.set(Math.PI/2+b[3],0,t*0.5+i); q.setFromEuler(e); m.compose(p,q,sc); G.plats.setMatrixAt(i,m); } G.plats.instanceMatrix.needsUpdate=true; }
+const PURPLE=new THREE.Color(0x3d0a52), GREEN=new THREE.Color(0x4a6b2f), YELLOW=new THREE.Color(0x9aa03c), TMPC=new THREE.Color();
+const SHOTS=[
+ {t0:0.0,t1:1.2,show:['surf'],cam:[2.4,2.6,4.4,2.2,2.4,4.0],look:[0,1.0,0,0,1.0,0],fn:u=>{ G.tq.visible=true; syrPlace(G.syrSurf,-0.5,2.3,0.5); }},
+ {t0:1.2,t1:2.4,show:['surf'],cam:[1.15,2.1,2.0,1.0,1.95,1.75],look:[0.1,1.35,0,0.1,1.35,0],fn:u=>{ G.tq.visible=true; syrPlace(G.syrSurf,0.2,LP(2.1,1.47,ss(u)),0.12); }},
+ {t0:2.4,t1:3.6,show:['surf'],cam:[0.7,1.85,1.3,0.62,1.78,1.18],look:[0.05,1.3,0,0.05,1.3,0],fn:u=>{ G.tq.visible=true; G.surfRefs.surfVein.material.opacity=LP(0.5,0.85,u); syrPlace(G.syrSurf,0.2,1.52,0.12); }},
+ {t0:3.6,t1:4.8,show:['surf'],cam:[0.48,1.70,0.85,0.46,1.68,0.78],look:[0.2,1.42,0.02,0.2,1.42,0.02],fn:u=>{ G.tq.visible=false; syrPlace(G.syrSurf,0.2,1.47-0.005*Math.sin(u*Math.PI),0.12); }},
+ {t0:4.8,t1:6.0,show:['surf'],cam:[0.46,1.68,0.78,0.44,1.66,0.74],look:[0.2,1.42,0.02,0.2,1.42,0.02],fn:u=>{ syrPlace(G.syrSurf,0.2,LP(1.47,1.33,ss(u)),0.12); }},
+ {t0:6.0,t1:7.2,show:['patient'],cam:[0.32,1.58,0.95,0.28,1.56,0.85],look:[0,1.47,0,0,1.47,0],fn:u=>{ G.patientInner.rotation.set(0,-0.15,0); }},
+ {t0:7.2,t1:8.4,show:['xray'],cam:[0.8,1.6,1.75,0.75,1.55,1.65],look:[0.1,1.12,0,0.1,1.12,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,0.05,1.16,0.10); G.xrayRefs.pool.scale.setScalar(0.001); flowCells(G.xrayRefs,t,0.05); }},
+ {t0:8.4,t1:9.6,show:['xray'],cam:[0.66,1.54,1.3,0.62,1.51,1.2],look:[0.22,1.1,0,0.22,1.1,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,LP(0.05,0.33,u),LP(1.16,1.13,u),0.10); G.xrayRefs.pool.scale.setScalar(0.001); flowCells(G.xrayRefs,t,0.05); }},
+ {t0:9.6,t1:10.8,show:['xray'],cam:[0.58,1.49,1.0,0.55,1.47,0.94],look:[0.32,1.08,0,0.32,1.08,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,LP(0.33,0.36,u),LP(1.13,1.05,ss(u)),0.10); G.xrayRefs.pool.scale.setScalar(LP(0.001,0.15,u)); flowCells(G.xrayRefs,t,0.05); }},
+ {t0:10.8,t1:12.0,show:['patient'],cam:[0.15,1.53,0.62,0.12,1.52,0.55],look:[0,1.48,0,0,1.48,0],fn:(u,t)=>{ G.patientInner.rotation.set(0,0.1,0); camera.position.x+=Math.sin(t*40)*0.004; camera.position.y+=Math.cos(t*34)*0.003; }},
+ {t0:12.0,t1:13.2,show:['xray'],cam:[0.58,1.45,1.05,0.55,1.43,0.98],look:[0.3,1.06,0,0.3,1.06,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,0.36,1.05,0.10); G.xrayRefs.pool.scale.setScalar(LP(0.15,0.55,ss(u))); flowCells(G.xrayRefs,t,0.04); }},
+ {t0:13.2,t1:14.4,show:['xray'],cam:[0.95,1.7,1.95,0.9,1.65,1.85],look:[0.15,1.05,0,0.15,1.05,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,0.36,1.05,0.10); G.xrayRefs.pool.scale.setScalar(LP(0.55,0.95,ss(u))); flowCells(G.xrayRefs,t,0.03); }},
+ {t0:14.4,t1:15.6,show:['surf'],cam:[0.7,1.8,1.35,0.65,1.76,1.25],look:[0.18,1.35,0,0.18,1.35,0],fn:u=>{ G.tq.visible=false; const k=LP(0.1,0.85,ss(u)); G.surfRefs.swlump.scale.set(1.5*k,0.26*k,1.0*k); syrPlace(G.syrSurf,0.2,1.33,0.12); }},
+ {t0:15.6,t1:16.8,show:['surf'],cam:[0.52,1.68,0.95,0.5,1.66,0.88],look:[0.2,1.4,0,0.2,1.4,0],fn:u=>{ const k=LP(0.85,1.0,u); G.surfRefs.swlump.scale.set(1.5*k,0.26*k,1.0*k); syrPlace(G.syrSurf,0.2,1.33,0.12); }},
+ {t0:16.8,t1:18.0,show:['xray'],cam:[0.85,1.6,1.7,0.8,1.55,1.6],look:[0.2,1.05,0,0.2,1.05,0],fn:(u,t)=>{ G.syrX.visible=true; syrPlace(G.syrX,0.36,1.05,0.10); G.xrayRefs.pool.scale.setScalar(1.0); flowCells(G.xrayRefs,t,0.02); }},
+ {t0:18.0,t1:19.2,show:['surf'],cam:[0.7,1.85,1.4,0.72,1.9,1.45],look:[0.2,1.4,0,0.2,1.4,0],fn:u=>{ G.surfRefs.swlump.scale.set(1.5,0.26,1.0); syrPlace(G.syrSurf,LP(0.2,0.45,u),LP(1.33,2.25,ss(u)),0.12); G.press.visible=u>0.45; }},
+ {t0:19.2,t1:20.4,show:['bruise'],cam:[0.5,1.66,1.25,0.46,1.63,1.18],look:[0.05,1.28,0.02,0.05,1.28,0.02],fn:u=>{ const R=G.bruiseRefs; R.patch.material.opacity=LP(0,1.0,ss(u)); R.patch.material.color.copy(PURPLE); R.dot.visible=false; R.patch.scale.setScalar(1); R.lump.scale.set(0.95,0.20,0.7); }},
+ {t0:20.4,t1:21.6,show:['patient'],cam:[-0.35,1.5,1.0,-0.32,1.48,0.9],look:[0,1.42,0,0,1.42,0],fn:u=>{ G.patientInner.rotation.set(0.10,0.25,0); }},
+ {t0:21.6,t1:22.8,show:['micro'],cam:[0.1,0.15,3.1,0.05,0.1,2.9],look:[0.2,-0.05,0,0.2,-0.05,0],fn:(u,t)=>{ microFlow(t,0.10,false); platsMode(t,0,false); G.fibrin.material.opacity=0; }},
+ {t0:22.8,t1:24.0,show:['micro'],cam:[0.15,0.1,3.0,0.2,0.05,2.8],look:[0.2,-0.05,0,0.2,-0.05,0],fn:(u,t)=>{ microFlow(t,0.08,false); platsMode(t,u,false); G.fibrin.material.opacity=0; }},
+ {t0:24.0,t1:25.2,show:['micro'],cam:[0.25,0.0,2.6,0.28,-0.05,2.45],look:[0.2,-0.05,0,0.2,-0.05,0],fn:(u,t)=>{ microFlow(t,0.05,false); platsMode(t,1,true); G.fibrin.material.opacity=LP(0,0.9,ss(u)); }},
+ {t0:25.2,t1:26.6,show:['xray'],cam:[0.95,1.7,1.95,0.9,1.65,1.85],look:[0.1,1.08,0,0.1,1.08,0],fn:(u,t)=>{ G.syrX.visible=false; G.xrayRefs.pool.scale.setScalar(0.75); flowCells(G.xrayRefs,t,0.05); }},
+ {t0:26.6,t1:28.0,show:['surf'],cam:[0.6,1.75,1.2,0.56,1.72,1.12],look:[0.05,1.42,0,0.05,1.42,0],fn:u=>{ G.tq.visible=false; G.ice.visible=true; const k=0.55; G.surfRefs.swlump.scale.set(1.5*k,0.26*k,1.0*k); G.syrSurf.visible=false; G.press.visible=false; }},
+ {t0:28.0,t1:29.4,show:['bruise'],cam:[0.48,1.65,1.22,0.46,1.63,1.16],look:[0.05,1.28,0.02,0.05,1.28,0.02],fn:u=>{ const R=G.bruiseRefs; R.patch.material.opacity=1.0; R.patch.material.color.copy(TMPC.lerpColors(PURPLE,GREEN,ss(u))); R.dot.visible=false; R.lump.scale.set(0.85,0.17,0.62); }},
+ {t0:29.4,t1:30.6,show:['bruise'],cam:[0.46,1.63,1.18,0.48,1.64,1.22],look:[0.05,1.28,0.02,0.05,1.28,0.02],fn:u=>{ const R=G.bruiseRefs; R.patch.material.opacity=0.85; R.patch.material.color.copy(TMPC.lerpColors(GREEN,YELLOW,ss(u))); R.patch.scale.setScalar(0.85); R.dot.visible=false; R.lump.scale.set(0.72,0.14,0.52); }},
+ {t0:30.6,t1:31.8,show:['micro'],cam:[0,0.2,3.2,-0.05,0.15,3.05],look:[0.2,-0.05,0,0.2,-0.05,0],fn:(u,t)=>{ microFlow(t,0.07,true); platsMode(t,1,true); G.fibrin.material.opacity=0.35; }},
+ {t0:31.8,t1:33.0,show:['xray'],cam:[0.85,1.62,1.8,0.83,1.6,1.75],look:[0.1,1.1,0,0.1,1.1,0],fn:(u,t)=>{ G.syrX.visible=false; G.xrayRefs.pool.scale.setScalar(0.001); flowCells(G.xrayRefs,t,0.05); }},
+ {t0:33.0,t1:34.2,show:['patient'],cam:[0.55,1.5,2.3,0.5,1.48,2.1],look:[0,1.3,0,0,1.3,0],fn:u=>{ G.patientInner.rotation.set(0,0,0); }},
+ {t0:34.2,t1:35.2,show:['bruise'],cam:[0.42,1.60,0.95,0.41,1.59,0.90],look:[0.05,1.28,0.02,0.05,1.28,0.02],fn:u=>{ const R=G.bruiseRefs; R.patch.material.opacity=0.12; R.patch.material.color.copy(YELLOW); R.patch.scale.setScalar(0.7); R.dot.visible=true; R.lump.scale.set(0.5,0.08,0.35); }},
+ {t0:35.2,t1:36.45,show:['patient'],cam:[0,1.3,3.6,0,1.25,3.2],look:[0,0.95,0,0,0.95,0],fn:u=>{ G.patientInner.rotation.set(0,0,0); }},
+];
+function applyState(t){
+  let s=SHOTS[SHOTS.length-1]; for(const sh of SHOTS){ if(t>=sh.t0&&t<sh.t1){ s=sh; break; } }
+  const u=clamp01((t-s.t0)/(s.t1-s.t0));
+  for(const k of ['surf','bruise','xray','micro','patient']) G[k].visible=s.show.includes(k);
+  G.syrSurf.visible=true; G.ice.visible=false; G.press.visible=false;
+  const c=s.cam,l=s.look,e=ss(u);
+  camera.position.set(LP(c[0],c[3],e),LP(c[1],c[4],e),LP(c[2],c[5],e));
+  camera.lookAt(LP(l[0],l[3],e),LP(l[1],l[4],e),LP(l[2],l[5],e));
+  if(s.fn) s.fn(u,t);
+}
+window.renderFrame=f=>{ applyState(Math.min(f/FPS,DUR-0.01)); renderer.render(scene,camera); };
+const iv=setInterval(()=>{ if(window.__pl){ window.ready=true; clearInterval(iv); } },500);
+setTimeout(()=>{ window.ready=true; },110000);
+</script>
+</body></html>
