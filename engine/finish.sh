@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Encode frames + mix -> mp4, then QA.   bash finish.sh "Title Of Short"
 set -e; T="${1:-short}"; F="out/${T// /-}.mp4"
-# CI bootstrap: GitHub runners may lack ffmpeg/ffprobe — fetch a static build.
+# CI bootstrap: GitHub runners may lack ffmpeg/ffprobe — install via apt (fast mirror), fallback to static build.
 if ! command -v ffmpeg >/dev/null 2>&1; then
-  echo "ffmpeg not found - downloading static build..."
-  curl -sL -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+  echo "ffmpeg not found - installing via apt..."
+  sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+fi
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "apt failed - downloading static build..."
+  curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
   tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
   export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
-  ffmpeg -version | head -1
 fi
+ffmpeg -version | head -1
 ffmpeg -v error -y -i mix_raw.wav -af "loudnorm=I=-14:TP=-1.5:LRA=7" -ar 48000 -ac 2 mix.wav
 ffmpeg -v error -y -framerate 30 -i frames/f%04d.jpg -i mix.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -c:a aac -b:a 192k -shortest -movflags +faststart "$F"
 ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate -of compact "$F"
