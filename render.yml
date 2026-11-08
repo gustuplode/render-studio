@@ -1,0 +1,110 @@
+name: Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'render.json'
+      - 'projects/**'
+      - '.github/workflows/render.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.calc.outputs.matrix }}
+      project: ${{ steps.calc.outputs.project }}
+      title: ${{ steps.calc.outputs.title }}
+      audio_url: ${{ steps.calc.outputs.audio_url }}
+      total: ${{ steps.calc.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: calc
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          m = json.load(open('render.json'))
+          total, chunks = int(m['total_frames']), int(m['chunks'])
+          per = (total + chunks - 1) // chunks
+          ranges = []
+          for i in range(chunks):
+              a = i * per
+              b = min(total - 1, (i + 1) * per - 1)
+              if a <= b:
+                  ranges.append({'index': i, 'start': a, 'end': b})
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('matrix=' + json.dumps({'include': ranges}) + '\n')
+              f.write('project=' + m['project'] + '\n')
+              f.write('title=' + m['title'] + '\n')
+              f.write('audio_url=' + m.get('audio_url', '') + '\n')
+              f.write('total=' + str(total) + '\n')
+          EOF
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Fetch three.js lib if the project does not bundle it
+        run: |
+          LIB="projects/${{ needs.plan.outputs.project }}/web/lib/three.module.js"
+          if [ ! -f "$LIB" ]; then
+            mkdir -p "$(dirname "$LIB")"
+            curl -L -o "$LIB" "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            ls -la "$LIB"
+          fi
+      - name: Render chunk ${{ matrix.start }}-${{ matrix.end }}
+        env:
+          WEB: ${{ github.workspace }}/projects/${{ needs.plan.outputs.project }}/web
+        run: |
+          mkdir -p frames_out
+          time node engine/render.mjs frames_out "${{ matrix.start }}-${{ matrix.end }}"
+          echo "frames rendered: $(ls frames_out | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.index }}
+          path: frames_out/*.jpg
+          retention-days: 1
+
+  finish:
+    needs: [plan, render]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Get audio mix
+        run: |
+          echo "frames downloaded: $(ls frames | wc -l)"
+          if [ -n "${{ needs.plan.outputs.audio_url }}" ]; then
+            curl -L -o mix_raw.wav "${{ needs.plan.outputs.audio_url }}"
+            ls -la mix_raw.wav
+          fi
+      - name: Encode + QA
+        run: |
+          mkdir -p out
+          bash engine/finish.sh "${{ needs.plan.outputs.title }}"
+          ls -la out/
+      - name: Publish release with the video
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="render-${{ needs.plan.outputs.project }}-${{ github.run_number }}"
+          gh release create "$TAG" out/*.mp4 out/qa_sheet.jpg \
+            --title "${{ needs.plan.outputs.title }} (run ${{ github.run_number }})" \
+            --notes "Frames: ${{ needs.plan.outputs.total }} - rendered on GitHub Actions parallel runners."
