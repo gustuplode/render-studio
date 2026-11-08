@@ -1,8 +1,8 @@
 {
-  "audio_url": "https://muse.ai/files/1428155380384318/1126268406927331/i3fzbtvksz7hg1a1s7s3aws5/mix_raw.wav",
-  "chunks": 4,
   "project": "bear",
   "title": "The Bear Who Became a Corporal",
-  "total_frames": 120,
-  "run": 3
+  "total_frames": 1090,
+  "chunks": 12,
+  "audio_url": "https://muse.ai/files/1428155380384318/1126268406927331/i3fzbtvksz7hg1a1s7s3aws5/mix_raw.wav",
+  "run": 4
 }
