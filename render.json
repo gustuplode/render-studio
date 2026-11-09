@@ -1,8 +1,8 @@
 {
-  "project": "bomb-s2",
-  "title": "Enola Gay - The Plane That Dropped the Bomb",
-  "total_frames": 1285,
+  "project": "bomb-s3",
+  "title": "Why Did America Drop a Second Bomb",
+  "total_frames": 1308,
   "chunks": 12,
   "audio_url": "",
-  "run": "bomb-s2"
+  "run": "bomb-s3"
 }
