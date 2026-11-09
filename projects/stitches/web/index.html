@@ -1,0 +1,190 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas><script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+const W=1080,H=1920,FPS=30,DUR=38.23,TS=DUR/38.5;
+const renderer=new THREE.WebGLRenderer({canvas:document.getElementById('c'),antialias:true,preserveDrawingBuffer:true});
+renderer.setSize(W,H,false); renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.outputColorSpace=THREE.SRGBColorSpace; renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.06;
+const scene=new THREE.Scene();
+{ const c=document.createElement('canvas'); c.width=16; c.height=256; const g=c.getContext('2d');
+  const gr=g.createLinearGradient(0,0,0,256); gr.addColorStop(0,'#8fd0f8'); gr.addColorStop(0.55,'#4aa8e8'); gr.addColorStop(1,'#2b7fc9');
+  g.fillStyle=gr; g.fillRect(0,0,16,256); const tex=new THREE.CanvasTexture(c); tex.colorSpace=THREE.SRGBColorSpace; scene.background=tex; }
+scene.fog=new THREE.Fog(0x4aa8e8,10,26);
+const pmrem=new THREE.PMREMGenerator(renderer); scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture; scene.environmentIntensity=0.5;
+const camera=new THREE.PerspectiveCamera(46,W/H,0.05,120); scene.add(camera);
+scene.add(new THREE.HemisphereLight(0xcfe8ff,0x2a5a8a,0.8));
+const key=new THREE.DirectionalLight(0xffffff,2.4); key.position.set(2.5,5.5,3.5); key.castShadow=true;
+key.shadow.mapSize.set(2048,2048); key.shadow.camera.left=-3; key.shadow.camera.right=3; key.shadow.camera.top=4; key.shadow.camera.bottom=-1; key.shadow.camera.far=15; key.shadow.bias=-0.0005; scene.add(key);
+const rim=new THREE.DirectionalLight(0xbfe0ff,0.9); rim.position.set(-4,3,-3); scene.add(rim);
+const ground=new THREE.Mesh(new THREE.CircleGeometry(14,48),new THREE.MeshStandardMaterial({color:0x63b6ec,roughness:1}));
+ground.rotation.x=-Math.PI/2; ground.receiveShadow=true; scene.add(ground);
+const clamp01=v=>Math.max(0,Math.min(1,v));
+const ss=(a,b,t)=>{ const u=clamp01((t-a)/(b-a)); return u*u*(3-2*u); };
+const lerp=(a,b,u)=>a+(b-a)*u;
+const V3=(x,y,z)=>new THREE.Vector3(x,y,z);
+function skinTexture(){ const c=document.createElement('canvas'); c.width=c.height=512; const g=c.getContext('2d');
+  g.fillStyle='#e8b795'; g.fillRect(0,0,512,512);
+  for(let i=0;i<2600;i++){ g.fillStyle=`rgba(${140+Math.random()*60|0},${80+Math.random()*40|0},50,${Math.random()*0.08})`; g.fillRect(Math.random()*512,Math.random()*512,2,2); }
+  for(let i=0;i<380;i++){ g.strokeStyle=`rgba(90,55,30,${0.10+Math.random()*0.16})`; g.lineWidth=1; const x=Math.random()*512,y=Math.random()*512; g.beginPath(); g.moveTo(x,y); g.lineTo(x+(Math.random()-0.5)*7,y+3+Math.random()*5); g.stroke(); }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(2,3); return t; }
+function layerTexture(){ const c=document.createElement('canvas'); c.width=256; c.height=512; const g=c.getContext('2d');
+  g.fillStyle='#eec39e'; g.fillRect(0,0,256,92);
+  g.fillStyle='#e9c46a'; g.fillRect(0,92,256,150);
+  g.fillStyle='#a63a3a'; g.fillRect(0,242,256,270);
+  for(let i=0;i<900;i++){ g.fillStyle=`rgba(120,40,40,${Math.random()*0.16})`; g.fillRect(Math.random()*256,242+Math.random()*270,2,2); }
+  for(let i=0;i<300;i++){ g.fillStyle=`rgba(255,230,150,${Math.random()*0.2})`; g.fillRect(Math.random()*256,92+Math.random()*150,3,3); }
+  for(let i=0;i<160;i++){ g.fillStyle=`rgba(90,55,30,${Math.random()*0.12})`; g.fillRect(Math.random()*256,Math.random()*92,2,2); }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t; }
+/* character */
+const patientInner=new THREE.Group(); scene.add(patientInner);
+fetch('./patient.b64').then(r=>r.text()).then(b64=>{ const bin=atob(b64); const bytes=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+  const ld=new GLTFLoader(); ld.setMeshoptDecoder(MeshoptDecoder);
+  ld.parse(bytes.buffer,'',gl=>{ gl.scene.traverse(o=>{ o.castShadow=true; o.receiveShadow=false; }); patientInner.add(gl.scene); window.__pl=true; },()=>{ window.__pl=true; });
+}).catch(()=>{ window.__pl=true; });
+patientInner.position.set(-0.35,0,-0.75);
+const iris=new THREE.Mesh(new THREE.PlaneGeometry(3,3),new THREE.MeshBasicMaterial({color:0xd8f2ff,transparent:true,opacity:0,depthTest:false}));
+iris.position.z=-0.3; iris.renderOrder=999; camera.add(iris);
+/* ===== arm group: pad + forearm + wound + needle (all local coords) ===== */
+const armG=new THREE.Group(); armG.position.set(0.05,0,0.95); armG.rotation.y=-0.3; scene.add(armG);
+const pad=new THREE.Mesh(new THREE.BoxGeometry(0.85,0.1,2.3),new THREE.MeshStandardMaterial({color:0xa8d8d0,roughness:0.85}));
+pad.position.set(0,0.78,0); pad.receiveShadow=true; pad.castShadow=true; armG.add(pad);
+const skinMat=new THREE.MeshStandardMaterial({map:skinTexture(),roughness:0.58,bumpMap:skinTexture(),bumpScale:0.12});
+{ const pts=[]; const prof=u=>(0.06+0.028*Math.sin(Math.min(u*1.25,1)*Math.PI*0.62))*(u<0.05? 0.18+0.82*u/0.05 : 1);
+  for(let i=0;i<=16;i++){ const u=i/16; pts.push(new THREE.Vector2(Math.max(prof(u),0.015),-0.95+u*1.9)); }
+  const geo=new THREE.LatheGeometry(pts,36); geo.computeVertexNormals();
+  const m=new THREE.Mesh(geo,skinMat); m.rotation.x=Math.PI/2; m.castShadow=true; m.receiveShadow=true;
+  m.position.set(0,0.905,0); armG.add(m); }
+const WY=0.992;
+const bed=new THREE.Mesh(new THREE.BoxGeometry(0.085,0.01,0.56),new THREE.MeshStandardMaterial({color:0x7e1f1f,roughness:0.5}));
+bed.position.set(0,0.984,0); armG.add(bed);
+const lipGeo=new THREE.CapsuleGeometry(0.017,0.2,6,14);
+const lips={ A:[], B:[] };
+[['A',-0.14],['B',0.14]].forEach(([seg,zc])=>{ [-1,1].forEach(side=>{ const lip=new THREE.Mesh(lipGeo,skinMat);
+    lip.scale.set(1,1,0.45); lip.rotation.x=Math.PI/2; lip.castShadow=true;
+    lip.userData={seg,side}; lip.position.set(0,WY,zc); armG.add(lip); lips[seg].push(lip); }); });
+const scar=new THREE.Mesh(new THREE.BoxGeometry(0.014,0.005,0.55),new THREE.MeshStandardMaterial({color:0xe9c4b2,roughness:0.5,transparent:true,opacity:0}));
+scar.position.set(0,0.997,0); armG.add(scar);
+/* needle + thread */
+const needle=new THREE.Group(); armG.add(needle);
+{ const arc=new THREE.Mesh(new THREE.TorusGeometry(0.105,0.0095,10,28,2.4),new THREE.MeshStandardMaterial({color:0xd7dde2,metalness:0.92,roughness:0.22}));
+  arc.rotation.z=-0.4; needle.add(arc); needle.traverse(o=>o.castShadow=true); }
+const threadMat=new THREE.MeshStandardMaterial({color:0x2456c8,roughness:0.45,transparent:true});
+function makeThread(){ const m=new THREE.Mesh(new THREE.BufferGeometry(),threadMat); m.frustumCulled=false; armG.add(m); return m; }
+const threads=[makeThread(),makeThread()];
+const knots=[0,1].map(()=>{ const k=new THREE.Mesh(new THREE.TorusGeometry(0.018,0.0075,8,16),threadMat); k.rotation.x=Math.PI/2; k.visible=false; armG.add(k); return k; });
+function setTube(mesh,pts,r){ const curve=new THREE.CatmullRomCurve3(pts); const g=new THREE.TubeGeometry(curve,24,r,6);
+  mesh.geometry.dispose(); mesh.geometry=g; }
+function stitchPath(zs){ return new THREE.CatmullRomCurve3([ V3(0.15,1.14,zs), V3(0.065,1.035,zs), V3(0.04,0.955,zs), V3(0,0.94,zs), V3(-0.04,0.955,zs), V3(-0.065,1.035,zs), V3(-0.15,1.14,zs) ]); }
+const stitchDefs=[ {zs:-0.14, pass:[8.5,13], pull:[13,15.5], seg:'A'}, {zs:0.14, pass:[16,19.5], pull:[19.5,21.3], seg:'B'} ];
+function glowSprite(color,scale){ const c=document.createElement('canvas'); c.width=c.height=128; const g=c.getContext('2d');
+  const gr=g.createRadialGradient(64,64,2,64,64,64); gr.addColorStop(0,'rgba(255,255,255,1)'); gr.addColorStop(0.35,'rgba(255,255,255,0.45)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle=gr; g.fillRect(0,0,128,128); const tex=new THREE.CanvasTexture(c);
+  const m=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,color,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false}));
+  m.scale.set(scale,scale,1); return m; }
+const pierceGlow=glowSprite(0xcfe8ff,0.16); armG.add(pierceGlow);
+
+/* ---------- INTERIOR: wound cross-section canyon at x=100 ---------- */
+const IX=100, inn=new THREE.Group(); scene.add(inn);
+{ const room=new THREE.Mesh(new THREE.SphereGeometry(7,24,18),new THREE.MeshStandardMaterial({color:0x6e2a32,roughness:1,side:THREE.BackSide}));
+  room.position.set(IX,1.3,0); inn.add(room); }
+const layerMat=new THREE.MeshStandardMaterial({map:layerTexture(),roughness:0.8});
+const blockGeo=new THREE.BoxGeometry(0.55,0.62,1.7);
+const blockL=new THREE.Mesh(blockGeo,layerMat); blockL.position.set(IX,1.31,0); inn.add(blockL);
+const blockR=new THREE.Mesh(blockGeo,layerMat); blockR.position.set(IX,1.31,0); inn.add(blockR);
+const floorI=new THREE.Mesh(new THREE.BoxGeometry(1,0.04,1.7),new THREE.MeshStandardMaterial({color:0x8e2f2f,roughness:0.7}));
+floorI.position.set(IX,0.99,0); inn.add(floorI);
+const inLight=new THREE.PointLight(0xffd9b0,7,6); inLight.position.set(IX,1.9,0.7); inn.add(inLight);
+const wbcs=[]; for(let i=0;i<7;i++){ const w=new THREE.Mesh(new THREE.SphereGeometry(0.016+Math.random()*0.01,10,8),new THREE.MeshStandardMaterial({color:0xf4f6f8,roughness:0.35}));
+  w.userData={ph:Math.random()*6.28, sp:0.5+Math.random()*0.7, z:-0.7+Math.random()*1.4, y:1.08+Math.random()*0.3}; inn.add(w); wbcs.push(w); }
+const fibs=[]; for(let i=0;i<9;i++){ const f=new THREE.Mesh(new THREE.CapsuleGeometry(0.011,0.032,4,8),new THREE.MeshStandardMaterial({color:0xf0a35e,roughness:0.5}));
+  f.userData={side:i%2?1:-1, z:-0.65+ (i/9)*1.3, y:1.08+((i*37)%32)/100, dl:i*0.09}; f.rotation.z=Math.PI/2; inn.add(f); fibs.push(f); }
+const colMat=new THREE.MeshStandardMaterial({color:0xf6ede2,roughness:0.6,transparent:true});
+const cols=[]; for(let i=0;i<12;i++){ const m=new THREE.Mesh(new THREE.BufferGeometry(),colMat); m.frustumCulled=false;
+  m.userData={z:-0.68+(i/12)*1.36, y:1.1+((i*53)%45)/100, sag:0.02+((i*29)%30)/1000, dl:i*0.07}; inn.add(m); cols.push(m); }
+const vesMatR=new THREE.MeshStandardMaterial({color:0xd42a1e,roughness:0.35,emissive:0x400a06,emissiveIntensity:0.6});
+const vesMatB=new THREE.MeshStandardMaterial({color:0x7a4fd0,roughness:0.35,emissive:0x1c0a40,emissiveIntensity:0.6});
+const vesL=new THREE.Mesh(new THREE.BufferGeometry(),vesMatR); vesL.frustumCulled=false; inn.add(vesL);
+const vesR=new THREE.Mesh(new THREE.BufferGeometry(),vesMatB); vesR.frustumCulled=false; inn.add(vesR);
+/* ---------- ONE continuous camera flight ---------- */
+const extA=[[0,V3(0.72,1.76,3.35),V3(0.05,1.0,0.8)],[4.5,V3(0.55,1.55,2.6),V3(0.05,1.0,0.9)],[8,V3(0.42,1.36,1.98),V3(0.05,1.0,0.93)],[13,V3(0.4,1.33,1.92),V3(0.05,1.0,0.95)],[18,V3(0.44,1.35,2.02),V3(0.05,1.0,0.97)],[21.5,V3(0.28,1.26,1.62),V3(0.05,1.01,0.95)]];
+const innK=[[22.1,V3(IX,1.66,1.2),V3(IX,1.32,0.1)],[26,V3(IX,1.54,0.8),V3(IX,1.3,0.0)],[30,V3(IX,1.46,0.55),V3(IX,1.3,-0.05)],[33,V3(IX,1.56,0.9),V3(IX,1.36,0.15)]];
+const extB=[[34.2,V3(0.3,1.27,1.68),V3(0.05,1.0,0.95)],[36.5,V3(0.5,1.45,2.45),V3(0.05,1.0,0.9)],[38.5,V3(0.7,1.7,3.5),V3(0.05,1.02,0.85)]];
+/* advanced camera: ONE spline per set + per-segment speed shaping.
+   travel segments flow (linear), detail beats settle (smoothstep = slow push-in),
+   the dive accelerates (ease-in). Spline keeps velocity continuous = no jerky jumps. */
+const EZ={ lin:u=>u, smo:u=>u*u*(3-2*u), acc:u=>Math.pow(u,1.35) };
+function splineCam(keys,eases){ const pc=new THREE.CatmullRomCurve3(keys.map(k=>k[1]),false,'catmullrom',0.5);
+  const lc=new THREE.CatmullRomCurve3(keys.map(k=>k[2]),false,'catmullrom',0.5); const n=keys.length-1;
+  return (t,pos,look)=>{ if(t<=keys[0][0]){ pos.copy(keys[0][1]); look.copy(keys[0][2]); return; }
+    if(t>=keys[n][0]){ pos.copy(keys[n][1]); look.copy(keys[n][2]); return; }
+    for(let i=0;i<n;i++){ if(t<=keys[i+1][0]){ const u=(t-keys[i][0])/(keys[i+1][0]-keys[i][0]); const U=(i+eases[i](u))/n;
+      pos.copy(pc.getPoint(U)); look.copy(lc.getPoint(U)); return; } } }; }
+const camA=splineCam(extA,[EZ.lin,EZ.smo,EZ.smo,EZ.smo,EZ.acc]);
+const camI=splineCam(innK,[EZ.smo,EZ.smo,EZ.lin]);
+const camB=splineCam(extB,[EZ.smo,EZ.lin]);
+function camAt(set,t,pos,look){ (set===0?camA:set===1?camI:camB)(t,pos,look); }
+const _p=new THREE.Vector3(), _l=new THREE.Vector3();
+function update(st){
+  if(st<21.8) camAt(0,st,_p,_l); else if(st<33.9) camAt(1,st,_p,_l); else camAt(2,st,_p,_l);
+  camera.position.copy(_p); camera.lookAt(_l);
+  iris.material.opacity=Math.max( Math.sin(Math.PI*clamp01((st-21.5)/0.6)), Math.sin(Math.PI*clamp01((st-33.6)/0.6)) )*0.97*( (st>21.5&&st<22.1)||(st>33.6&&st<34.2)?1:0 );
+  patientInner.position.y=0.004*Math.sin(st*1.3);
+  const gapA=0.05-0.031*ss(13,15.5,st)-0.013*ss(24,32,st);
+  const gapB=0.05-0.031*ss(19.5,21.3,st)-0.013*ss(24,32,st);
+  lips.A.forEach(l=>l.position.x=l.userData.side*(gapA/2+0.012));
+  lips.B.forEach(l=>l.position.x=l.userData.side*(gapB/2+0.012));
+  bed.scale.x=((gapA+gapB)/2)/0.05; bed.visible=st<34.5;
+  scar.material.opacity=0.9*ss(34,37,st);
+  threadMat.opacity=1-ss(34,36,st);
+  needle.visible=false; pierceGlow.material.opacity=0;
+  lips.A.forEach(l=>l.position.y=WY); lips.B.forEach(l=>l.position.y=WY);
+  stitchDefs.forEach((sd,idx)=>{ const path=stitchPath(sd.zs), th=threads[idx], kn=knots[idx];
+    if(st<sd.pass[0]){ th.visible=false; kn.visible=false; return; }
+    th.visible=threadMat.opacity>0.02;
+    if(st<sd.pass[1]){ const u=clamp01((st-sd.pass[0])/(sd.pass[1]-sd.pass[0]));
+      const pos=path.getPointAt(u), tan=path.getTangentAt(u);
+      needle.visible=true; needle.position.copy(pos); needle.rotation.set(0,0,Math.atan2(tan.y,tan.x)-0.5);
+      const pts=[V3(0.3,1.18,sd.zs+0.15), path.getPointAt(0)];
+      for(let j=0;j<=5;j++) pts.push(path.getPointAt(u*j/5));
+      setTube(th,pts,0.007); kn.visible=false;
+      /* pierce highlight flashes exactly when the needle breaks the skin */
+      const spike=(c)=>Math.max(0,1-Math.abs(u-c)/0.07);
+      const sp=Math.max(spike(0.24),spike(0.74));
+      if(sp>0){ pierceGlow.material.opacity=0.85*sp; pierceGlow.position.set(u<0.5?0.065:-0.065,1.05,sd.zs); }
+    } else { const pu=ss(sd.pull[0],sd.pull[1],st);
+      /* tension feel: wound lips tug up slightly as the thread pulls tight */
+      lips[sd.seg].forEach(l=>l.position.y=WY+0.004*Math.sin(pu*Math.PI));
+      if(pu>0.75&&st<sd.pull[1]+0.4){ pierceGlow.material.opacity=0.5*Math.sin(Math.min(1,(pu-0.75)/0.25)*Math.PI); pierceGlow.position.set(0,1.06,sd.zs); }
+      const lEnd=V3(lerp(-0.15,-0.022,pu),lerp(1.14,1.055,pu),sd.zs), rEnd=V3(lerp(0.15,0.022,pu),lerp(1.14,1.055,pu),sd.zs);
+      setTube(th,[lEnd,V3(-0.06,1.03,sd.zs),V3(0,0.95,sd.zs),V3(0.06,1.03,sd.zs),rEnd],0.007);
+      if(st<sd.pull[1]){ needle.visible=true; needle.position.copy(lEnd); needle.rotation.set(0,0,0.6); }
+      kn.visible=pu>0.8&&threadMat.opacity>0.02; kn.position.set(0,1.045,sd.zs); kn.scale.setScalar(Math.max(0.01,ss(0.8,1,pu)));
+    } });
+  const gapI=0.34-0.29*ss(23,32,st);
+  blockL.position.x=IX-(gapI/2+0.275); blockR.position.x=IX+(gapI/2+0.275); floorI.scale.x=gapI+0.12;
+  wbcs.forEach(w=>{ const fade=1-ss(27,29.5,st); w.visible=fade>0.02&&st>21;
+    w.position.set(IX+Math.sin(st*w.userData.sp+w.userData.ph)*gapI*0.28, w.userData.y+0.02*Math.sin(st*1.7+w.userData.ph), w.userData.z);
+    w.scale.setScalar(Math.max(0.01,fade)); });
+  fibs.forEach((f,i)=>{ const c=ss(25+f.userData.dl*3,31,st); f.visible=c>0.01;
+    f.position.set(IX+f.userData.side*lerp(gapI/2,0.015,c), f.userData.y, f.userData.z);
+    f.rotation.z=Math.PI/2+0.3*Math.sin(st*3+i*1.7); });
+  colMat.opacity=0.95*ss(26.5,31.5,st);
+  cols.forEach(c=>{ c.visible=st>25.5; const y=c.userData.y, z=c.userData.z, s=c.userData.sag;
+    setTube(c,[V3(IX-gapI/2-0.02,y,z),V3(IX,y-s,z),V3(IX+gapI/2+0.02,y,z)],0.0045); });
+  const g=ss(24.5,30.5,st);
+  if(g>0.01){ setTube(vesL,[V3(IX-gapI/2-0.06,1.05,-0.3),V3(lerp(IX-gapI/2,IX,0.5*g),1.03,-0.27),V3(lerp(IX-gapI/2-0.02,IX-0.01,g),1.05,-0.24)],0.013);
+    setTube(vesR,[V3(IX+gapI/2+0.06,1.05,0.25),V3(lerp(IX+gapI/2,IX,0.5*g),1.03,0.27),V3(lerp(IX+gapI/2+0.02,IX+0.01,g),1.05,0.22)],0.013); }
+  vesL.visible=vesR.visible=g>0.01;
+  vesMatR.emissiveIntensity=0.6+0.5*Math.sin(st*6)*ss(30.5,32,st);
+  /* heal-complete warm flash inside the wound as the bridge finishes */
+  inLight.intensity=7+10*ss(31,31.8,st)*(1-ss(31.8,33.4,st));
+}
+window.renderFrame=f=>{ const t=Math.min(f/FPS,DUR); update(t/TS); renderer.render(scene,camera); };
+window.renderFrame(0);
+const iv=setInterval(()=>{ if(window.__pl){ window.ready=true; clearInterval(iv); } },500);
+setTimeout(()=>{ window.ready=true; },100000);
+</script></body></html>
