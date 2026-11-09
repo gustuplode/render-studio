@@ -8,6 +8,9 @@ if [ ! -f mix_raw.wav ] && [ -f render.json ]; then
   if [ -n "$P" ] && [ -f "projects/$P/audio/mix_raw.b64" ]; then
     base64 -d "projects/$P/audio/mix_raw.b64" > mix_raw.wav
     echo "decoded projects/$P/audio/mix_raw.b64 -> mix_raw.wav ($(stat -c%s mix_raw.wav) bytes)"
+  elif [ -n "$P" ] && ls projects/$P/audio/mix_raw.b64.part* >/dev/null 2>&1; then
+    cat projects/$P/audio/mix_raw.b64.part* | base64 -d > mix_raw.wav
+    echo "decoded projects/$P/audio/mix_raw.b64.part* -> mix_raw.wav ($(stat -c%s mix_raw.wav) bytes)"
   fi
 fi
 # CI bootstrap: GitHub runners may lack ffmpeg/ffprobe — install via apt (fast mirror), fallback to static build.
