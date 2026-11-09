@@ -5,7 +5,10 @@ set -e; T="${1:-short}"; F="out/${T// /-}.mp4"
 # Only triggers when no mix_raw.wav was downloaded AND the manifest's project has a .b64 file.
 if [ ! -f mix_raw.wav ] && [ -f render.json ]; then
   P=$(python3 -c "import json;print(json.load(open('render.json'))['project'])" 2>/dev/null || true)
-  if [ -n "$P" ] && [ -f "projects/$P/audio/mix_raw.b64" ]; then
+  if [ -n "$P" ] && [ -f "projects/$P/audio/mix.ogg.b64" ]; then
+    base64 -d "projects/$P/audio/mix.ogg.b64" > mix_src.ogg
+    echo "decoded projects/$P/audio/mix.ogg.b64 -> mix_src.ogg ($(stat -c%s mix_src.ogg) bytes)"
+  elif [ -n "$P" ] && [ -f "projects/$P/audio/mix_raw.b64" ]; then
     base64 -d "projects/$P/audio/mix_raw.b64" > mix_raw.wav
     echo "decoded projects/$P/audio/mix_raw.b64 -> mix_raw.wav ($(stat -c%s mix_raw.wav) bytes)"
   elif [ -n "$P" ] && ls projects/$P/audio/mix_raw.b64.part* >/dev/null 2>&1; then
@@ -25,6 +28,11 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
 fi
 ffmpeg -version | head -1
+# Opus-shipped audio (mix.ogg.b64 route) converts to WAV here, once ffmpeg exists.
+if [ ! -f mix_raw.wav ] && [ -f mix_src.ogg ]; then
+  ffmpeg -v error -y -i mix_src.ogg -ac 1 -ar 48000 mix_raw.wav
+  echo "converted mix_src.ogg -> mix_raw.wav ($(stat -c%s mix_raw.wav) bytes)"
+fi
 ffmpeg -v error -y -i mix_raw.wav -af "loudnorm=I=-14:TP=-1.5:LRA=7" -ar 48000 -ac 2 mix.wav
 ffmpeg -v error -y -framerate 30 -i frames/f%04d.jpg -i mix.wav -map 0:v:0 -map 1:a:0 -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -c:a aac -b:a 192k -shortest -movflags +faststart "$F"
 ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate -of compact "$F"
