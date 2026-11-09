@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 # Encode frames + mix -> mp4, then QA.   bash finish.sh "Title Of Short"
 set -e; T="${1:-short}"; F="out/${T// /-}.mp4"
+# Fallback: a project may ship its audio as base64 text (binary files cannot be pushed via the API).
+# Only triggers when no mix_raw.wav was downloaded AND the manifest's project has a .b64 file.
+if [ ! -f mix_raw.wav ] && [ -f render.json ]; then
+  P=$(python3 -c "import json;print(json.load(open('render.json'))['project'])" 2>/dev/null || true)
+  if [ -n "$P" ] && [ -f "projects/$P/audio/mix_raw.b64" ]; then
+    base64 -d "projects/$P/audio/mix_raw.b64" > mix_raw.wav
+    echo "decoded projects/$P/audio/mix_raw.b64 -> mix_raw.wav ($(stat -c%s mix_raw.wav) bytes)"
+  fi
+fi
 # CI bootstrap: GitHub runners may lack ffmpeg/ffprobe — install via apt (fast mirror), fallback to static build.
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg not found - installing via apt..."
