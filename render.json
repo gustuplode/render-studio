@@ -1,8 +1,8 @@
 {
-  "project": "vs-missiles",
-  "title": "US Missiles vs Chinese Missiles",
-  "total_frames": 1448,
+  "project": "vs-soldiers",
+  "title": "1000 Chinese Soldiers vs 1000 US Soldiers",
+  "total_frames": 1441,
   "chunks": 12,
   "audio_url": "",
-  "run": "2026-11-09 vs-missiles v1"
+  "run": "2026-11-09 vs-soldiers v1"
 }
