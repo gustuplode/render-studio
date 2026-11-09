@@ -1,8 +1,8 @@
 {
-  "project": "bomb-s3",
-  "title": "Why Did America Drop a Second Bomb",
-  "total_frames": 1308,
+  "project": "bomb-s4",
+  "title": "The Man Who Survived Both Atomic Bombs",
+  "total_frames": 1230,
   "chunks": 12,
   "audio_url": "",
-  "run": "bomb-s3"
+  "run": "bomb-s4"
 }
