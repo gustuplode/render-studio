@@ -1,8 +1,8 @@
 {
-  "project": "vs-jets",
-  "title": "US Fighter Jets vs Chinese Fighter Jets",
-  "total_frames": 1578,
+  "project": "vs-legion",
+  "title": "1000 Roman Legion vs 1000 US Marines",
+  "total_frames": 1403,
   "chunks": 12,
   "audio_url": "",
-  "run": "2026-11-09 vs-jets v1"
+  "run": "2026-11-09 vs-legion v1"
 }
