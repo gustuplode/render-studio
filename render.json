@@ -1,8 +1,8 @@
 {
-  "project": "bomb-s1",
-  "title": "The Morning Hiroshima Changed Forever",
-  "total_frames": 1096,
+  "project": "bomb-s2",
+  "title": "Enola Gay - The Plane That Dropped the Bomb",
+  "total_frames": 1285,
   "chunks": 12,
   "audio_url": "",
-  "run": "bomb-s1"
+  "run": "bomb-s2"
 }
