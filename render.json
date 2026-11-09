@@ -1,8 +1,8 @@
 {
-  "project": "bomb-long2",
-  "title": "The Man Who Survived Two Atomic Bombs",
-  "total_frames": 7219,
+  "project": "bomb-long1",
+  "title": "The Day America Dropped the Atomic Bomb on Japan",
+  "total_frames": 10486,
   "chunks": 12,
   "audio_url": "",
-  "run": "bomb-long2"
+  "run": "bomb-long1"
 }
