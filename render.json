@@ -1,1 +1,8 @@
-{"audio_url":"","chunks":12,"project":"pigeon-v2","run":12,"title":"The Pigeon Who Saved Two Hundred Men","total_frames":1305}
+{
+  "project": "vs-missiles",
+  "title": "US Missiles vs Chinese Missiles",
+  "total_frames": 1448,
+  "chunks": 12,
+  "audio_url": "",
+  "run": "2026-11-09 vs-missiles v1"
+}
