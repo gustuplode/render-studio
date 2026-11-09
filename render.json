@@ -1,8 +1,8 @@
 {
-  "project": "vs-legion",
-  "title": "1000 Roman Legion vs 1000 US Marines",
-  "total_frames": 1403,
+  "project": "bomb-s1",
+  "title": "The Morning Hiroshima Changed Forever",
+  "total_frames": 1096,
   "chunks": 12,
   "audio_url": "",
-  "run": "2026-11-09 vs-legion v1"
+  "run": "bomb-s1"
 }
