@@ -1,8 +1,8 @@
 {
-  "project": "bomb-s5",
-  "title": "The First 60 Seconds of an Atomic Blast",
-  "total_frames": 1266,
+  "project": "bomb-long2",
+  "title": "The Man Who Survived Two Atomic Bombs",
+  "total_frames": 7219,
   "chunks": 12,
   "audio_url": "",
-  "run": "bomb-s5"
+  "run": "bomb-long2"
 }
