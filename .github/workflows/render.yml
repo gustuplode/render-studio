@@ -56,7 +56,20 @@ jobs:
         with:
           node-version: 20
       - run: npm install --no-audit --no-fund
-      - run: npx playwright install --with-deps chromium
+      - name: Install Chromium + system deps (layered, retried — fixed 2026-11-11 after --with-deps began failing on all chunks ~15:00 UTC)
+        run: |
+          ok=0
+          for i in 1 2 3; do
+            if npx playwright install --with-deps chromium; then ok=1; break; fi
+            echo "with-deps attempt $i failed - retrying in 20s"; sleep 20
+          done
+          if [ "$ok" != "1" ]; then
+            echo "Fallback: browser-only install, deps separately (best effort)"
+            npx playwright install chromium
+            sudo apt-get update -y || true
+            npx playwright install-deps chromium || true
+          fi
+          ls -la ~/.cache/ms-playwright/ || true
       - name: Fetch three.js lib if the project does not bundle it
         run: |
           LIB="projects/${{ needs.plan.outputs.project }}/web/lib/three.module.js"
