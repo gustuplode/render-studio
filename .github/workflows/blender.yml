@@ -1,0 +1,102 @@
+name: Blender Render
+
+# Manual dispatch ONLY (workflow_dispatch) — never triggered by pushes.
+# Companion to render.yml (the three.js engine); this one renders a real
+# Blender/Cycles scene: projects/brain-freeze-blender/build_scene.py builds
+# scene.blend on the runner, 12 matrix jobs render 68 frames each (816 total,
+# 24 fps, 640x1138 Cycles (locked after benchmark ladder; upscale in finish)), finish assembles 1080x1920 MP4 at -14 LUFS and
+# publishes a Release tagged blender-brain-freeze-<run_number>.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ ! -f blender.tar.xz ]; then
+            curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+              || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+              || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+              || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+          fi
+          tar -xJf blender.tar.xz
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Build scene (bpy script, deterministic)
+        run: |
+          ./blender-4.2.3-linux-x64/blender -b --factory-startup \
+            --python projects/brain-freeze-blender/build_scene.py
+          ls -lh projects/brain-freeze-blender/scene.blend
+      - name: Render chunk ${{ matrix.chunk }}
+        run: |
+          START=$(( ${{ matrix.chunk }} * 68 + 1 ))
+          END=$(( (${{ matrix.chunk }} + 1) * 68 ))
+          if [ $END -gt 816 ]; then END=816; fi
+          echo "frames $START-$END"
+          mkdir -p frames
+          time ./blender-4.2.3-linux-x64/blender -b projects/brain-freeze-blender/scene.blend \
+            -o frames/f_#### -s $START -e $END -a
+          echo "frames rendered: $(ls frames/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.chunk }}
+          path: frames/*.png
+          retention-days: 1
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Assemble MP4 + QA + Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "frames downloaded: $(ls frames/*.png | wc -l)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+            tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+            export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
+          fi
+          ffmpeg -version | head -1
+          base64 -d projects/brain-freeze-blender/audio/mix.ogg.b64 > mix_src.ogg
+          ffmpeg -v error -y -i mix_src.ogg -ac 1 -ar 48000 mix_raw.wav
+          ffmpeg -v error -y -i mix_raw.wav -af "loudnorm=I=-14:TP=-1.5:LRA=7" -ar 48000 -ac 2 mix.wav
+          mkdir -p out
+          ffmpeg -v error -y -framerate 24 -i frames/f_%04d.png -i mix.wav \
+            -map 0:v:0 -map 1:a:0 \
+            -vf "scale=1080:1920:flags=lanczos" \
+            -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p \
+            -c:a aac -b:a 192k -shortest -movflags +faststart \
+            "out/Why-the-Brain-Freezes.mp4"
+          ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate -of compact "out/Why-the-Brain-Freezes.mp4"
+          ffmpeg -i "out/Why-the-Brain-Freezes.mp4" -af ebur128 -f null - 2>&1 | grep -E "^\s+I:" | tail -1
+          ffmpeg -v error -y -i "out/Why-the-Brain-Freezes.mp4" -vf "fps=2,scale=180:-1,tile=10x4" -frames:v 1 out/qa_sheet.jpg
+          ls -la out/
+          TAG="blender-brain-freeze-${{ github.run_number }}"
+          gh release create "$TAG" out/Why-the-Brain-Freezes.mp4 out/qa_sheet.jpg \
+            --title "Why the Brain Freezes (Blender run ${{ github.run_number }})" \
+            --notes "Blender 4.2 Cycles render: 816 frames @24fps in 12 parallel chunks, assembled on GitHub Actions."
