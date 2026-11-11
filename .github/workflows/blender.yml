@@ -27,16 +27,68 @@ jobs:
         with:
           path: blender.tar.xz
           key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
       - name: Download + extract Blender 4.2.3
         run: |
-          if [ ! -f blender.tar.xz ]; then
-            curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
-              || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
-              || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
-              || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache — skipping download/extract."
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
           fi
-          tar -xJf blender.tar.xz
           ./blender-4.2.3-linux-x64/blender --version
+      - name: Cache MPFB + MakeHuman system assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            mpfb2-src.zip
+            mh-system-assets.zip
+          key: mpfb-2.0.18-assets-v1
+      - name: Cache MPFB 2.0.18 (installed dirs)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.config/blender/4.2/extensions/blender_org/mpfb
+            ~/.config/blender/4.2/extensions/.user/blender_org/mpfb/data
+          key: mpfb-2.0.18-installed-v1
+      - name: Install MPFB 2.0.18 + system assets (CHARACTER V2)
+        run: |
+          if [ -f "$HOME/.config/blender/4.2/extensions/blender_org/mpfb/blender_manifest.toml" ] \
+             && [ -f "$HOME/.config/blender/4.2/extensions/.user/blender_org/mpfb/data/skins/young_caucasian_male/young_caucasian_male.mhmat" ]; then
+            echo "MPFB installed dirs restored from cache — skipping install."
+            exit 0
+          fi
+          # Same sources/versions as the proven local install:
+          # MPFB2 source zipball for tag v2.0.18 (extensions platform carries
+          # no direct zip; releases carry no assets), system-assets CC0 pack
+          # from files.makehumancommunity.org (the files2 mirror is ~17 KB/s).
+          if [ ! -f mpfb2-src.zip ]; then
+            curl -sL --retry 3 -o mpfb2-src.zip "https://api.github.com/repos/makehumancommunity/mpfb2/zipball/v2.0.18"
+          fi
+          if [ ! -f mh-system-assets.zip ]; then
+            curl -sL --retry 3 -o mh-system-assets.zip "https://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip"
+          fi
+          ls -lh mpfb2-src.zip mh-system-assets.zip
+          rm -rf /tmp/mpfb_src && mkdir -p /tmp/mpfb_src
+          unzip -q mpfb2-src.zip -d /tmp/mpfb_src
+          EXT_DIR="$HOME/.config/blender/4.2/extensions/blender_org"
+          mkdir -p "$EXT_DIR"
+          cp -r /tmp/mpfb_src/*/src/mpfb "$EXT_DIR/mpfb"
+          test -f "$EXT_DIR/mpfb/blender_manifest.toml"
+          DATA_DIR="$HOME/.config/blender/4.2/extensions/.user/blender_org/mpfb/data"
+          mkdir -p "$DATA_DIR"
+          unzip -q -o mh-system-assets.zip -d "$DATA_DIR"
+          test -f "$DATA_DIR/skins/young_caucasian_male/young_caucasian_male.mhmat"
+          echo "MPFB installed: $(du -sh "$EXT_DIR/mpfb" | cut -f1), assets: $(du -sh "$DATA_DIR" | cut -f1)"
       - name: Build scene (bpy script, deterministic)
         run: |
           ./blender-4.2.3-linux-x64/blender -b --factory-startup \
