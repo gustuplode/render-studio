@@ -48,7 +48,7 @@ scene.world = world
 world.use_nodes = True
 bg = world.node_tree.nodes.get("Background")
 bg.inputs["Color"].default_value = (0.004, 0.008, 0.02, 1.0)
-bg.inputs["Strength"].default_value = 0.35
+bg.inputs["Strength"].default_value = 0.5
 
 common.make_collections(scene)
 
