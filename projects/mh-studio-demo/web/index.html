@@ -1,0 +1,183 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { loadCharacter } from './charlib.js';
+import { poseIdle, poseWalk, poseWave, attachToBone } from './anim.js';
+import { buildSet } from './setbuild.js';
+import { makeCrown, makeBeard, makeCap } from './props.js';
+
+const W = 1080, H = 1920, FPS = 30, DUR = 36, CYCLE = 1.48;
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.06;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 220);
+scene.add(camera);
+
+buildSet(scene);
+// far ground so the wide pull-back never shows the disc edge
+const far = new THREE.Mesh(new THREE.CircleGeometry(90, 40), new THREE.MeshStandardMaterial({ color: 0x7fae5e, roughness: 1 }));
+far.rotation.x = -Math.PI / 2; far.position.y = -0.02; far.receiveShadow = true; scene.add(far);
+
+/* ---------- HUD text cards (drawn in canvas space via camera-attached planes) ---------- */
+function textCard(text, w = 0.66, h = 0.165, fontPx = 92) {
+  const c = document.createElement('canvas'); c.width = 640; c.height = 160;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(255,255,255,0.96)';
+  g.beginPath(); g.roundRect(6, 6, 628, 148, 34); g.fill();
+  g.fillStyle = '#20303c'; g.font = `700 ${fontPx}px Arial, sans-serif`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, 320, 86);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false }));
+  m.position.set(0, -0.55, -1.5); m.renderOrder = 10;
+  camera.add(m);
+  return m;
+}
+const CARDS = [
+  { mesh: textCard('HOUSE'), t0: 1.0, t1: 3.6 },
+  { mesh: textCard('TREE'), t0: 4.1, t1: 6.9 },
+  { mesh: textCard('TABLE'), t0: 9.6, t1: 12.1 },
+  { mesh: textCard('LAMP'), t0: 14.2, t1: 16.7 },
+];
+const endCard = textCard('MAKEHUMAN STUDIO — DEMO', 0.8, 0.2, 40);
+endCard.position.set(0, -0.3, -1.5);
+const fade = (t, a, b, f = 0.35) => THREE.MathUtils.clamp(Math.min((t - a) / f, (b - t) / f, 1), 0, 1);
+
+/* ---------- movement tracks: sampled tables => pure function of time ---------- */
+const sstep = u => { u = THREE.MathUtils.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+function sampleKeys(keys, t) {
+  if (t <= keys[0].t) return { x: keys[0].x, z: keys[0].z };
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (t <= b.t) { const u = sstep((t - a.t) / (b.t - a.t)); return { x: a.x + (b.x - a.x) * u, z: a.z + (b.z - a.z) * u }; }
+  }
+  const L = keys[keys.length - 1]; return { x: L.x, z: L.z };
+}
+// faceOverride: [{t0,t1,ang}] heading blends to ang across the window and holds after t1
+function buildTrack(keys, faceOverride = [], initHeading = 0) {
+  const dt = 0.05, tab = [];
+  let dist = 0, prev = null, heading = initHeading;
+  for (let t = 0; t <= DUR + 1e-4; t += dt) {
+    const p = sampleKeys(keys, t);
+    if (prev) dist += Math.hypot(p.x - prev.x, p.z - prev.z);
+    tab.push({ t, x: p.x, z: p.z, dist });
+    prev = p;
+  }
+  for (let i = 0; i < tab.length; i++) {
+    const a = tab[Math.max(0, i - 1)], b = tab[Math.min(tab.length - 1, i + 1)];
+    const vx = (b.x - a.x) / (b.t - a.t || dt), vz = (b.z - a.z) / (b.t - a.t || dt);
+    const sp = Math.hypot(vx, vz);
+    let target = heading;
+    if (sp > 0.12) target = Math.atan2(vx, vz);
+    for (const o of faceOverride) {
+      if (tab[i].t >= o.t0) target = o.ang;   // from t0 on, face override wins (smooth via rate below)
+    }
+    let d = target - heading;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    heading += THREE.MathUtils.clamp(d, -2.6 * dt, 2.6 * dt);
+    tab[i].heading = heading; tab[i].speed = sp;
+  }
+  return tab;
+}
+function lookup(tab, t) {
+  const i = THREE.MathUtils.clamp(Math.round(t / 0.05), 0, tab.length - 1);
+  return tab[i];
+}
+
+/* ---------- cast ---------- */
+const NAMES = ['aadmi', 'aurat', 'budha', 'raja', 'sipahi'];
+try {
+  const chars = {};
+  for (const n of NAMES) { chars[n] = await loadCharacter(`assets/${n}.glb`); scene.add(chars[n].group); }
+  attachToBone(chars.raja, 'head', makeCrown(), [0, 0.155, 0.01], [0, 0, 0]);
+  attachToBone(chars.raja, 'head', makeBeard(0x2e2019), [0, -0.092, 0.048], [0.1, 0, 0], 0.74);
+  attachToBone(chars.budha, 'head', makeBeard(0xd8d8d8), [0, -0.092, 0.048], [0.1, 0, 0], 0.74);
+  attachToBone(chars.sipahi, 'head', makeCap(0x4a5d23), [0, 0.1, 0.012], [-0.06, 0, 0], [1, 0.78, 1]);
+
+  const standers = [
+    { ch: chars.raja, x: 3.7, z: 0.35, off: 0.0 },
+    { ch: chars.sipahi, x: 4.25, z: 0.35, off: 1.7 },
+    { ch: chars.budha, x: 4.8, z: 0.35, off: 3.1 },
+  ];
+  for (const s of standers) { s.ch.group.position.set(s.x, 0, s.z); s.ch.group.rotation.y = 0; }
+
+  const aadmi = {
+    ch: chars.aadmi, wave: true,
+    tab: buildTrack([
+      { t: 0, x: -4.4, z: -0.55 }, { t: 1.2, x: -4.35, z: 0.6 }, { t: 3.9, x: -2.35, z: 0.6 },
+      { t: 6.2, x: -2.35, z: 0.6 }, { t: 9.4, x: 0.0, z: 0.6 }, { t: 11.4, x: 0.0, z: 0.6 },
+      { t: 14.0, x: 1.85, z: 0.75 }, { t: 17.2, x: 1.85, z: 0.75 }, { t: 19.5, x: 2.6, z: 0.45 },
+      { t: 36, x: 2.6, z: 0.45 },
+    ], [{ t0: 19.5, ang: 0 }], 0),
+  };
+  const aurat = {
+    ch: chars.aurat, wave: false,
+    tab: buildTrack([
+      { t: 0, x: 6.4, z: 0.6 }, { t: 12.5, x: 6.4, z: 0.6 }, { t: 17.0, x: 3.3, z: 0.5 },
+      { t: 19.5, x: 3.15, z: 0.45 }, { t: 36, x: 3.15, z: 0.45 },
+    ], [{ t0: 19.0, ang: 0 }], -Math.PI / 2),
+  };
+  const walkers = [aadmi, aurat];
+
+  const CAMKEYS = [
+    { t: 0, p: [-6.4, 2.1, 5.4], l: [-4.3, 1.0, -0.5] },
+    { t: 4, p: [-5.0, 1.7, 4.3], l: [-3.4, 1.0, 0.2] },
+    { t: 9, p: [-2.7, 1.55, 4.0], l: [-1.1, 1.0, 0.3] },
+    { t: 14, p: [-0.5, 1.55, 4.0], l: [1.0, 1.0, 0.4] },
+    { t: 19, p: [1.1, 1.65, 4.4], l: [2.5, 1.0, 0.4] },
+    { t: 24, p: [2.0, 1.6, 5.3], l: [3.3, 1.05, 0.4] },
+    { t: 28, p: [2.7, 1.55, 5.0], l: [3.5, 1.05, 0.4] },
+    { t: 32, p: [1.6, 3.2, 9.0], l: [1.0, 0.9, 0.0] },
+    { t: 36, p: [0.4, 5.4, 16.0], l: [0.2, 0.6, -0.2] },
+  ];
+  function camAt(t) {
+    if (t <= CAMKEYS[0].t) return CAMKEYS[0];
+    for (let i = 0; i < CAMKEYS.length - 1; i++) {
+      const a = CAMKEYS[i], b = CAMKEYS[i + 1];
+      if (t <= b.t) {
+        const u = sstep((t - a.t) / (b.t - a.t));
+        return {
+          p: a.p.map((v, k) => v + (b.p[k] - v) * u),
+          l: a.l.map((v, k) => v + (b.l[k] - v) * u),
+        };
+      }
+    }
+    return CAMKEYS[CAMKEYS.length - 1];
+  }
+
+  function applyWalker(w, t) {
+    const s = lookup(w.tab, t);
+    w.ch.group.position.set(s.x, 0, s.z);
+    w.ch.group.rotation.y = s.heading;
+    const amp = THREE.MathUtils.clamp(s.speed / 0.55, 0, 1);
+    if (w.wave && t > 23.4 && t < 28.2) {
+      const blend = fade(t, 23.4, 28.2, 0.9);
+      poseWave(w.ch, t, blend);
+    } else if (amp > 0.04) {
+      poseWalk(w.ch, (s.dist / CYCLE) * Math.PI * 2, { thigh: 0.40 * amp, arm: 0.30 * amp, bob: amp });
+    } else {
+      poseIdle(w.ch, t);
+    }
+  }
+
+  window.renderFrame = (f) => {
+    const t = f / FPS;
+    const ck = camAt(t);
+    camera.position.set(...ck.p);
+    camera.lookAt(...ck.l);
+    for (const s of standers) poseIdle(s.ch, t + s.off);
+    for (const w of walkers) applyWalker(w, t);
+    for (const c of CARDS) c.mesh.material.opacity = fade(t, c.t0, c.t1);
+    endCard.material.opacity = fade(t, 33.6, 99, 0.8);
+    renderer.render(scene, camera);
+  };
+  window.ready = true;
+} catch (e) { console.log('ERR ' + e.message); window.err = e.message; }
+</script></body></html>
