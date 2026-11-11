@@ -1,0 +1,151 @@
+name: Blender Demo Render
+
+# Manual dispatch ONLY (workflow_dispatch) — never triggered by pushes.
+# DEMO sibling of blender.yml (same Blender/MPFB install + FULL cache set:
+# tarball, extracted dir, MPFB zips, MPFB installed dirs). Differences vs
+# blender.yml are ONLY: project = projects/brain-freeze-demo (build_demo.py
+# builds demo_scene.blend), CHUNK-BOMBED matrix 24 chunks x 12 frames = 288
+# frames total (FAST profile lives in the blend: Cycles cap 24, adaptive
+# 0.03, OIDN, 640x1138, 24 fps), and the finish assembles a SILENT demo MP4
+# (no voice in a demo) released as blender-brain-freeze-demo-<run_number>.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache — skipping download/extract."
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
+          fi
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Cache MPFB + MakeHuman system assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            mpfb2-src.zip
+            mh-system-assets.zip
+          key: mpfb-2.0.18-assets-v1
+      - name: Cache MPFB 2.0.18 (installed dirs)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.config/blender/4.2/extensions/blender_org/mpfb
+            ~/.config/blender/4.2/extensions/.user/blender_org/mpfb/data
+          key: mpfb-2.0.18-installed-v1
+      - name: Install MPFB 2.0.18 + system assets (CHARACTER V2)
+        run: |
+          if [ -f "$HOME/.config/blender/4.2/extensions/blender_org/mpfb/blender_manifest.toml" ] \
+             && [ -f "$HOME/.config/blender/4.2/extensions/.user/blender_org/mpfb/data/skins/young_caucasian_male/young_caucasian_male.mhmat" ]; then
+            echo "MPFB installed dirs restored from cache — skipping install."
+            exit 0
+          fi
+          # Same sources/versions as the proven local install (see blender.yml):
+          if [ ! -f mpfb2-src.zip ]; then
+            curl -sL --retry 3 -o mpfb2-src.zip "https://api.github.com/repos/makehumancommunity/mpfb2/zipball/v2.0.18"
+          fi
+          if [ ! -f mh-system-assets.zip ]; then
+            curl -sL --retry 3 -o mh-system-assets.zip "https://files.makehumancommunity.org/asset_packs/makehuman_system_assets/makehuman_system_assets_cc0.zip"
+          fi
+          ls -lh mpfb2-src.zip mh-system-assets.zip
+          rm -rf /tmp/mpfb_src && mkdir -p /tmp/mpfb_src
+          unzip -q mpfb2-src.zip -d /tmp/mpfb_src
+          EXT_DIR="$HOME/.config/blender/4.2/extensions/blender_org"
+          mkdir -p "$EXT_DIR"
+          cp -r /tmp/mpfb_src/*/src/mpfb "$EXT_DIR/mpfb"
+          test -f "$EXT_DIR/mpfb/blender_manifest.toml"
+          DATA_DIR="$HOME/.config/blender/4.2/extensions/.user/blender_org/mpfb/data"
+          mkdir -p "$DATA_DIR"
+          unzip -q -o mh-system-assets.zip -d "$DATA_DIR"
+          test -f "$DATA_DIR/skins/young_caucasian_male/young_caucasian_male.mhmat"
+          echo "MPFB installed: $(du -sh "$EXT_DIR/mpfb" | cut -f1), assets: $(du -sh "$DATA_DIR" | cut -f1)"
+      - name: Build demo scene (bpy script, deterministic)
+        run: |
+          ./blender-4.2.3-linux-x64/blender -b --factory-startup \
+            --python projects/brain-freeze-demo/build_demo.py
+          ls -lh projects/brain-freeze-demo/demo_scene.blend
+      - name: Render chunk ${{ matrix.chunk }}
+        run: |
+          START=$(( ${{ matrix.chunk }} * 12 + 1 ))
+          END=$(( (${{ matrix.chunk }} + 1) * 12 ))
+          if [ $END -gt 288 ]; then END=288; fi
+          echo "frames $START-$END"
+          mkdir -p frames
+          time ./blender-4.2.3-linux-x64/blender -b projects/brain-freeze-demo/demo_scene.blend \
+            -o frames/f_#### -s $START -e $END -a
+          echo "frames rendered: $(ls frames/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.chunk }}
+          path: frames/*.png
+          retention-days: 1
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Assemble SILENT demo MP4 + QA + Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "frames downloaded: $(ls frames/*.png | wc -l)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+            tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+            export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
+          fi
+          ffmpeg -version | head -1
+          mkdir -p out
+          # SILENT demo: video + a silent AAC track (player compatibility).
+          ffmpeg -v error -y -framerate 24 -i frames/f_%04d.png \
+            -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
+            -map 0:v:0 -map 1:a:0 \
+            -vf "scale=1080:1920:flags=lanczos" \
+            -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -shortest -movflags +faststart \
+            "out/Brain-Freeze-Demo.mp4"
+          ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate -of compact "out/Brain-Freeze-Demo.mp4"
+          ffmpeg -v error -y -i "out/Brain-Freeze-Demo.mp4" -vf "fps=2,scale=180:-1,tile=10x4" -frames:v 1 out/qa_sheet.jpg
+          ls -la out/
+          TAG="blender-brain-freeze-demo-${{ github.run_number }}"
+          gh release create "$TAG" out/Brain-Freeze-Demo.mp4 out/qa_sheet.jpg \
+            --title "Brain Freeze DEMO (Blender run ${{ github.run_number }})" \
+            --notes "Blender 4.2 Cycles DEMO render: 288 frames @24fps in 24 parallel chunks of 12, FAST profile (cap 24, adaptive 0.03, OIDN), silent visual demo — character + walk + expressions + camera proof."
