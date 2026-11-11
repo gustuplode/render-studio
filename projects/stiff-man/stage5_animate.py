@@ -24,9 +24,18 @@ hall = O["Light_HallCold"].data
 hall.energy = 0.0
 hall.keyframe_insert("energy", frame=1)
 hall.keyframe_insert("energy", frame=150)
-hall.energy = 110.0
+hall.energy = 190.0
 hall.keyframe_insert("energy", frame=270)
 hall.keyframe_insert("energy", frame=480)
+
+# ---- doorway glow energy (same ramp as the hall spot) ----
+dglow = O["Light_DoorGlow"].data
+dglow.energy = 0.0
+dglow.keyframe_insert("energy", frame=1)
+dglow.keyframe_insert("energy", frame=150)
+dglow.energy = 15.0
+dglow.keyframe_insert("energy", frame=270)
+dglow.keyframe_insert("energy", frame=480)
 
 # ---- stiff man: rigid whole-body drift (no bending, ever) ----
 STIFF_PARTS = ["Stiff_LegL", "Stiff_LegR", "Stiff_ShoeL", "Stiff_ShoeR",
