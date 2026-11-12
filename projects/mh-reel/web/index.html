@@ -1,0 +1,314 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { loadCharacter, TARGET_HEIGHTS, rotBone } from './charlib.js';
+import { poseIdle, poseWalk, poseLaugh, posePointAt, poseRaiseSnap, poseHandTo, poseSmile, attachToBone } from './anim.js';
+import * as P from './props.js';
+import { BEATS } from './beats.js';
+
+const W = 1080, H = 1920, FPS = 30, DUR = BEATS.total, CYCLE = 1.48;
+const L = BEATS.lines, EV = BEATS.events, CHUNKS = BEATS.chunks;
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.06;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 260);
+scene.add(camera);
+
+const sstep = u => { u = THREE.MathUtils.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+const ramp = (t, a, b) => sstep((t - a) / (b - a));
+
+/* ---------- lights & sky (dusk-able) ---------- */
+const DAY = { bg: new THREE.Color(0x79bdf0), hemi: 0.95, sun: 2.0, sunCol: new THREE.Color(0xfff1da), rim: 0.55, sunY: 9 };
+const DUSK = { bg: new THREE.Color(0x2e3d63), hemi: 0.52, sun: 0.7, sunCol: new THREE.Color(0xff9a4a), rim: 0.22, sunY: 3.0 };
+scene.background = new THREE.Color().copy(DAY.bg);
+const hemi = new THREE.HemisphereLight(0xd8ecff, 0x51713c, DAY.hemi); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1da, DAY.sun);
+sun.position.set(6, DAY.sunY, 7); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -10; sun.shadow.camera.right = 10; sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10;
+sun.shadow.camera.far = 40; sun.shadow.bias = -0.0004;
+scene.add(sun);
+const rim = new THREE.DirectionalLight(0xbfe0ff, DAY.rim); rim.position.set(-6, 4, -6); scene.add(rim);
+// camera fill: soft frontal light that follows the camera so faces never die at dusk
+const fill = new THREE.DirectionalLight(0xfff4e0, 0.30); scene.add(fill); scene.add(fill.target);
+
+/* ---------- set (reel street layout) ---------- */
+const ground = new THREE.Mesh(new THREE.CircleGeometry(20, 48), new THREE.MeshStandardMaterial({ color: 0x74ac54, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const far = new THREE.Mesh(new THREE.CircleGeometry(95, 40), new THREE.MeshStandardMaterial({ color: 0x7fae5e, roughness: 1 }));
+far.rotation.x = -Math.PI / 2; far.position.y = -0.02; far.receiveShadow = true; scene.add(far);
+const path = P.makePathStrip(11.5); path.position.set(0.3, 0, 0); scene.add(path);
+const house = P.makeHouse(); house.position.set(-4.6, 0, -3.8); scene.add(house);
+const winMat = house.userData.windows[0].material;
+const tree = P.makeTree(1); tree.position.set(-5.7, 0, -1.9); scene.add(tree);
+const bench = P.makeBench(); bench.position.set(4.35, 0, -1.85); bench.rotation.y = 0.25; scene.add(bench);
+const fence = P.makeFenceRun(11); fence.position.set(0.2, 0, -4.5); scene.add(fence);
+const plant = P.makePottedPlant(1); plant.position.set(-3.55, 0, -1.95); scene.add(plant);
+const plant2 = P.makePottedPlant(0.85); plant2.position.set(-5.6, 0, -1.95); scene.add(plant2);
+
+// lamp glow sprite texture (radial gradient)
+function glowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,225,160,1)'); gr.addColorStop(0.35, 'rgba(255,190,110,0.55)'); gr.addColorStop(1, 'rgba(255,180,90,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const glowTex = glowTexture();
+const LAMPS = [];
+for (const lx of [-3.1, 1.5, 3.7]) {
+  const lamp = P.makeLampPost(); lamp.position.set(lx, 0, -1.55); scene.add(lamp);
+  const pl = new THREE.PointLight(0xffc46b, 0, 10, 2); pl.position.set(lx, 3.0, -1.55); scene.add(pl);
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffcf8e, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  spr.position.set(lx, 3.06, -1.55); spr.scale.setScalar(0.01); scene.add(spr);
+  LAMPS.push({ bulbMat: lamp.userData.bulbMat, pl, spr });
+}
+
+/* ---------- caption cards (drawn in-scene so the engine capture includes them) ---------- */
+function makeCard(w, h, px = 1024, py = 256) {
+  const c = document.createElement('canvas'); c.width = px; c.height = py;
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false, depthTest: false }));
+  m.renderOrder = 20; camera.add(m);
+  return { c, g: c.getContext('2d'), tex, mesh: m };
+}
+function drawCrown(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s, s);
+  g.fillStyle = '#f5b921'; g.strokeStyle = '#7a4d00'; g.lineWidth = 3;
+  g.beginPath();
+  g.moveTo(-46, 26); g.lineTo(-46, -22); g.lineTo(-24, 2); g.lineTo(0, -30); g.lineTo(24, 2); g.lineTo(46, -22); g.lineTo(46, 26); g.closePath();
+  g.fill(); g.stroke();
+  g.fillStyle = '#c22e2e';
+  g.beginPath(); g.arc(0, 10, 7, 0, 7); g.fill();
+  g.restore();
+}
+function drawCaptionText(card, text) {
+  const { c, g, tex } = card;
+  g.clearRect(0, 0, c.width, c.height);
+  const crown = text.includes('👑');
+  const clean = text.replace('👑', '').trim();
+  let px = 116;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const maxW = crown ? 800 : 880;
+  while (px > 40) { g.font = `800 ${px}px Arial, sans-serif`; if (g.measureText(clean).width <= maxW) break; px -= 6; }
+  const tw = g.measureText(clean).width;
+  const cx = crown ? (c.width - 120) / 2 : c.width / 2;
+  g.lineWidth = Math.max(10, px * 0.14); g.strokeStyle = '#000'; g.lineJoin = 'round';
+  g.strokeText(clean, cx, c.height / 2 + 4);
+  g.fillStyle = '#fff'; g.fillText(clean, cx, c.height / 2 + 4);
+  if (crown) drawCrown(g, cx + tw / 2 + 62, c.height / 2 - 6, 1.0);
+  tex.needsUpdate = true;
+}
+const capCard = makeCard(0.80, 0.20); capCard.mesh.position.set(0, -0.545, -1.6);
+const endCard = makeCard(0.84, 0.235); endCard.mesh.position.set(0, 0.46, -1.6);
+drawCaptionText(endCard, 'PAID UP. 👑');
+let lastChunk = -2;
+
+/* ---------- movement tracks (demo-proven) ---------- */
+function sampleKeys(keys, t) {
+  if (t <= keys[0].t) return { x: keys[0].x, z: keys[0].z };
+  for (let i = 0; i < keys.length - 1; i++) {
+    const a = keys[i], b = keys[i + 1];
+    if (t <= b.t) { const u = sstep((t - a.t) / (b.t - a.t)); return { x: a.x + (b.x - a.x) * u, z: a.z + (b.z - a.z) * u }; }
+  }
+  const Lk = keys[keys.length - 1]; return { x: Lk.x, z: Lk.z };
+}
+function buildTrack(keys, faceHold = null, initHeading = 0) {
+  const dt = 0.05, tab = []; let dist = 0, prev = null, heading = initHeading;
+  for (let t = 0; t <= DUR + 1e-4; t += dt) {
+    const p = sampleKeys(keys, t);
+    if (prev) dist += Math.hypot(p.x - prev.x, p.z - prev.z);
+    tab.push({ t, x: p.x, z: p.z, dist }); prev = p;
+  }
+  for (let i = 0; i < tab.length; i++) {
+    const a = tab[Math.max(0, i - 1)], b = tab[Math.min(tab.length - 1, i + 1)];
+    const vx = (b.x - a.x) / (b.t - a.t || dt), vz = (b.z - a.z) / (b.t - a.t || dt);
+    const sp = Math.hypot(vx, vz);
+    let target = heading;
+    if (sp > 0.12) target = Math.atan2(vx, vz);
+    if (faceHold && tab[i].t >= faceHold.t0) target = faceHold.ang;
+    let d = target - heading;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    heading += THREE.MathUtils.clamp(d, -2.6 * dt, 2.6 * dt);
+    tab[i].heading = heading; tab[i].speed = sp;
+  }
+  return tab;
+}
+const lookup = (tab, t) => tab[THREE.MathUtils.clamp(Math.round(t / 0.05), 0, tab.length - 1)];
+
+/* ---------- camera spline (keys derived from beat times) ---------- */
+const CAMKEYS = [
+  { t: 0, p: [-0.60, 1.60, 5.15], l: [-0.15, 1.06, -0.30] },
+  { t: L[1].start, p: [-0.45, 1.68, 5.45], l: [-0.05, 1.04, -0.40] },
+  { t: L[1].end, p: [0.30, 2.30, 7.10], l: [0.30, 1.02, -0.50] },
+  { t: L[2].start + 0.25, p: [-1.02, 1.38, 2.35], l: [-1.30, 1.24, 0.10] },
+  { t: EV.tSnap, p: [-1.06, 1.40, 2.15], l: [-1.30, 1.27, 0.10] },
+  { t: L[3].start + 0.35, p: [0.32, 2.10, 7.90], l: [0.32, 1.02, -0.35] },
+  { t: DUR, p: [0.28, 2.25, 8.30], l: [0.28, 1.00, -0.35] },
+];
+function camAt(t) {
+  if (t <= CAMKEYS[0].t) return CAMKEYS[0];
+  for (let i = 0; i < CAMKEYS.length - 1; i++) {
+    const a = CAMKEYS[i], b = CAMKEYS[i + 1];
+    if (t <= b.t) { const u = sstep((t - a.t) / (b.t - a.t)); return { p: a.p.map((v, k) => v + (b.p[k] - v) * u), l: a.l.map((v, k) => v + (b.l[k] - v) * u) }; }
+  }
+  return CAMKEYS[CAMKEYS.length - 1];
+}
+
+/* ---------- cast ---------- */
+const NAMES = ['aadmi', 'raja', 'aurat', 'budha', 'sipahi'];
+try {
+  const chars = {};
+  for (const n of NAMES) { chars[n] = await loadCharacter(`assets/${n}.glb`, TARGET_HEIGHTS[n]); scene.add(chars[n].group); }
+  attachToBone(chars.raja, 'head', P.makeCrown(), [0, 0.155, 0.01], [0, 0, 0]);
+  attachToBone(chars.raja, 'head', P.makeBeard(0x2e2019), [0, -0.092, 0.048], [0.1, 0, 0], 0.74);
+  attachToBone(chars.budha, 'head', P.makeBeard(0xd8d8d8), [0, -0.092, 0.048], [0.1, 0, 0], 0.74);
+  attachToBone(chars.sipahi, 'head', P.makeCap(0x4a5d23), [0, 0.1, 0.012], [-0.06, 0, 0], [1, 0.78, 1]);
+
+  const coinGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.010, 20);
+  const coinMat = new THREE.MeshStandardMaterial({ color: 0xf2b83c, metalness: 0.9, roughness: 0.25, emissive: 0x8a6100, emissiveIntensity: 0.9 });
+  const coinR = new THREE.Mesh(coinGeo, coinMat); coinR.castShadow = true;
+  const coinA = new THREE.Mesh(coinGeo, coinMat); coinA.castShadow = true;
+  attachToBone(chars.raja, 'wrist.R', coinR, [0, 0.105, 0.03], [Math.PI / 2.4, 0, 0]);
+  attachToBone(chars.aadmi, 'wrist.R', coinA, [0, 0.105, 0.03], [Math.PI / 2.4, 0, 0]);
+  coinR.visible = false; coinA.visible = false;
+
+  const POS = {
+    aadmi: [-1.28, 0.15], raja: [0.68, -0.80], sipahi: [1.32, -0.88], budha: [1.90, -0.80],
+    aadmiB4: [0.02, -0.02], auratEnd: [-0.55, 0.30],
+  };
+  chars.raja.group.position.set(POS.raja[0], 0, POS.raja[1]); chars.raja.group.rotation.y = -0.10;
+  chars.sipahi.group.position.set(POS.sipahi[0], 0, POS.sipahi[1]); chars.sipahi.group.rotation.y = -0.06;
+  chars.budha.group.position.set(POS.budha[0], 0, POS.budha[1]); chars.budha.group.rotation.y = -0.12;
+
+  const aadmiTab = buildTrack([
+    { t: 0, x: POS.aadmi[0], z: POS.aadmi[1] },
+    { t: L[3].start + 0.10 * L[3].dur, x: POS.aadmi[0], z: POS.aadmi[1] },
+    { t: L[3].start + 0.48 * L[3].dur, x: POS.aadmiB4[0], z: POS.aadmiB4[1] },
+    { t: DUR, x: POS.aadmiB4[0], z: POS.aadmiB4[1] },
+  ], { t0: L[3].start + 0.48 * L[3].dur, ang: 2.44 }, 0);
+  const auratTab = buildTrack([
+    { t: 0, x: 3.60, z: 0.75 },
+    { t: L[1].start + 0.25, x: 3.60, z: 0.75 },
+    { t: L[1].end - 0.15, x: POS.auratEnd[0], z: POS.auratEnd[1] },
+    { t: DUR, x: POS.auratEnd[0], z: POS.auratEnd[1] },
+  ], { t0: L[1].end - 0.4, ang: 0 }, Math.PI);
+
+  const MEET = new THREE.Vector3(0.35, 1.03, -0.40);
+  const rajaChest = new THREE.Vector3();
+  const laughEnv = (t, t0, dur) => { const u = (t - t0) / dur; return (u < 0 || u > 1) ? 0 : Math.sin(Math.PI * Math.min(1, Math.max(0, u))); };
+
+  window.renderFrame = (f) => {
+    const t = f / FPS;
+    const ck = camAt(t);
+    camera.position.set(...ck.p); camera.lookAt(...ck.l);
+    fill.position.copy(camera.position);
+    fill.target.position.set(ck.l[0], ck.l[1], ck.l[2]);
+
+    // dusk across L2
+    const dk = ramp(t, L[1].start, L[1].end);
+    scene.background.copy(DAY.bg).lerp(DUSK.bg, dk);
+    hemi.intensity = THREE.MathUtils.lerp(DAY.hemi, DUSK.hemi, dk);
+    sun.intensity = THREE.MathUtils.lerp(DAY.sun, DUSK.sun, dk);
+    sun.color.copy(DAY.sunCol).lerp(DUSK.sunCol, dk);
+    sun.position.y = THREE.MathUtils.lerp(DAY.sunY, DUSK.sunY, dk);
+    rim.intensity = THREE.MathUtils.lerp(DAY.rim, DUSK.rim, dk);
+    fill.intensity = 0.30 + 0.55 * dk;
+
+    // lamp flare at "lit"
+    const fk = ramp(t, EV.tFlare, EV.tFlare + 0.22);
+    for (const lp of LAMPS) {
+      lp.bulbMat.emissiveIntensity = 2.6 * fk;
+      lp.pl.intensity = 16 * fk;
+      lp.spr.material.opacity = 0.70 * fk;
+      lp.spr.scale.setScalar(0.01 + 1.3 * fk);
+    }
+    winMat.emissiveIntensity = 1.5 * fk;
+    renderer.toneMappingExposure = 1.06 + 0.13 * Math.sin(Math.PI * Math.min(1, fk)) + 0.05 * fk;
+
+    /* --- RAJA --- */
+    {
+      const ch = chars.raja;
+      // turn to face aadmi during B4
+      const turnK = ramp(t, L[3].start + 0.30 * L[3].dur, L[3].start + 0.58 * L[3].dur);
+      ch.group.rotation.y = -0.10 + turnK * (-0.60);
+      const laugh1 = laughEnv(t, EV.tLaugh1, 1.15);
+      const laugh2 = laughEnv(t, L[1].start + 0.05, 0.95);
+      const give = ramp(t, EV.tPaid - 0.60, EV.tPaid - 0.12);
+      if (give > 0.001) poseHandTo(ch, t, give, MEET, 0.18);
+      else if (laugh1 > 0.001 || laugh2 > 0.001) {
+        const ph = ((t - (laugh1 > 0.001 ? EV.tLaugh1 : L[1].start + 0.05)) / 1.15) * 2;
+        poseLaugh(ch, t, ph, Math.max(laugh1, laugh2 * 0.8));
+      } else poseIdle(ch, t + 0.7);
+      coinR.visible = t >= EV.tPaid - 0.55 && t < EV.tTake;
+    }
+    /* --- SIPAHI & BUDHA --- */
+    for (const [nm, off] of [['sipahi', 1.9], ['budha', 3.4]]) {
+      const ch = chars[nm];
+      const laugh2 = laughEnv(t, L[1].start + 0.05, 0.95);
+      if (laugh2 > 0.001) poseLaugh(ch, t, ((t - L[1].start - 0.05) / 0.95) * 1.5, laugh2 * 0.65);
+      else { poseIdle(ch, t + off); if (t > EV.tFlare) poseSmile(ch, t, 0.5); }
+    }
+    /* --- AADMI --- */
+    {
+      const ch = chars.aadmi;
+      const s = lookup(aadmiTab, t);
+      ch.group.position.set(s.x, 0, s.z);
+      ch.group.rotation.y = s.heading;
+      const amp = THREE.MathUtils.clamp(s.speed / 0.55, 0, 1);
+      const laugh2 = laughEnv(t, L[1].start + 0.05, 0.95);
+      if (t < L[1].end) {
+        const pb = ramp(t, EV.tBet - 0.15, EV.tBet + 0.25) * (1 - ramp(t, L[0].end - 0.45, L[0].end - 0.02));
+        rajaChest.set(POS.raja[0], 1.30, POS.raja[1]);
+        if (pb > 0.001) posePointAt(ch, t, pb, rajaChest);
+        else poseIdle(ch, t);
+      } else if (t < L[2].start) {
+        if (laugh2 > 0.001) poseLaugh(ch, t, ((t - L[1].start - 0.05) / 0.95) * 1.5, laugh2 * 0.6);
+        else poseIdle(ch, t);
+      } else if (t < L[3].start) {
+        const raise = ramp(t, EV.tRaise0, EV.tRaise1) * (1 - 0.45 * ramp(t, EV.tSnap + 0.5, L[2].end));
+        const snapK = ramp(t, EV.tSnap, EV.tSnap + 0.07);
+        poseRaiseSnap(ch, t, raise, snapK);
+        rotBone(ch, 'neck01', -0.16 * raise + 0.10 * snapK, 0, 0.11);  // chin up on raise, small nod on snap, smile tilt
+      } else {
+        const give = ramp(t, EV.tPaid - 0.50, EV.tPaid - 0.05);
+        if (amp > 0.05 && give <= 0.001) poseWalk(ch, (s.dist / CYCLE) * Math.PI * 2, { thigh: 0.40 * amp, arm: 0.30 * amp, bob: amp });
+        else if (give > 0.001) poseHandTo(ch, t, give, MEET, 0.22);
+        else poseIdle(ch, t);
+      }
+      coinA.visible = t >= EV.tTake;
+    }
+    /* --- AURAT --- */
+    {
+      const ch = chars.aurat;
+      const s = lookup(auratTab, t);
+      ch.group.position.set(s.x, 0, s.z);
+      ch.group.rotation.y = s.heading;
+      const amp = THREE.MathUtils.clamp(s.speed / 0.55, 0, 1);
+      if (amp > 0.04) poseWalk(ch, (s.dist / CYCLE) * Math.PI * 2, { thigh: 0.40 * amp, arm: 0.30 * amp, bob: amp });
+      else { poseIdle(ch, t + 2.2); if (t > EV.tFlare) poseSmile(ch, t, 0.6); }
+    }
+
+    /* --- captions --- */
+    let ci = -1;
+    for (let i = 0; i < CHUNKS.length; i++) if (t >= CHUNKS[i].t0 && t < CHUNKS[i].t1) { ci = i; break; }
+    if (ci !== lastChunk) { if (ci >= 0) drawCaptionText(capCard, CHUNKS[ci].text); lastChunk = ci; }
+    capCard.mesh.material.opacity = ci >= 0
+      ? Math.min(ramp(t, CHUNKS[ci].t0, CHUNKS[ci].t0 + 0.07), 1 - ramp(t, CHUNKS[ci].t1 - 0.06, CHUNKS[ci].t1))
+      : 0;
+    endCard.mesh.material.opacity = ramp(t, DUR - 1.05, DUR - 0.78);
+
+    renderer.render(scene, camera);
+  };
+  window.__scaleLog = window.__scaleLog || {};
+  window.ready = true;
+} catch (e) { console.log('ERR ' + e.message); window.err = e.message; }
+</script></body></html>
