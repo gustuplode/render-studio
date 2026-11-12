@@ -1,0 +1,90 @@
+name: Blender Proof Final Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/proof-gravity-ball-final/trigger.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache"
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
+          fi
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Reassemble packed blend (xz + base64, md5-verified)
+        run: |
+          cat projects/proof-gravity-ball-final/blend/proof_gravity_ball_final.blend.xz.b64.part* | base64 -d | xz -d > scene.blend
+          ls -lh scene.blend
+          echo "ec5464549c3eb74f1077708239ebf571  scene.blend" | md5sum -c -
+      - name: Render strided chunk ${{ matrix.chunk }}
+        run: |
+          mkdir -p frames
+          time ./blender-4.2.3-linux-x64/blender -b scene.blend -P projects/proof-gravity-ball-final/render_frames.py -- ${{ matrix.chunk }} 15
+          echo "frames rendered: $(ls frames/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.chunk }}
+          path: frames/*.png
+          retention-days: 1
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Assemble silent MP4 + QA + Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "frames downloaded: $(ls frames/*.png | wc -l)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+            tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+            export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
+          fi
+          ffmpeg -version | head -1
+          mkdir -p out
+          ffmpeg -v error -y -framerate 30 -i frames/f_%04d.png -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -movflags +faststart "out/Proof-Gravity-Ball-Final-Silent.mp4"
+          ffprobe -v error -show_entries format=duration -show_entries stream=codec_type,width,height,r_frame_rate -of compact "out/Proof-Gravity-Ball-Final-Silent.mp4"
+          ffmpeg -v error -y -i "out/Proof-Gravity-Ball-Final-Silent.mp4" -vf "fps=1,scale=270:-1,tile=5x1" -frames:v 1 out/qa_sheet.jpg
+          ls -la out/
+          TAG="blender-proof-gravity-final-${{ github.run_number }}"
+          gh release create "$TAG" out/Proof-Gravity-Ball-Final-Silent.mp4 out/qa_sheet.jpg --title "Proof Gravity Ball FINAL (Blender run ${{ github.run_number }})" --notes "Master 3D Reel proof shot FINAL: 150 frames @30fps (5.0 s), native 1080x1920, Cycles 48 samples, strided 15-job matrix."
