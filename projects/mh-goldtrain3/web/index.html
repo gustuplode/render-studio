@@ -1,0 +1,660 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { loadCharacter, TARGET_HEIGHTS, rotBone } from './charlib.js';
+import { poseIdle, poseWave } from './anim.js';
+import { setHand, setHands, poseRestGT, poseWalkGT, posePush, poseHoldMap, poseLean, poseHeadShake, poseLookAround, poseStartle, cycleFor } from './anim2.js';
+import { aimBone, boneWorldPos } from './anim.js';
+import { KWALK_AADMI } from './kwalk_aadmi.js';
+import { KWALK_AURAT } from './kwalk_aurat.js';
+import { sampleKimodo, blendKimodo, windowProgress } from './kimodo.js';
+import * as P from './props.js';
+import * as G from './props2.js';
+
+const W = 1080, H = 1920, FPS = 30, TOTAL = 1581;
+const SEC = { hook:[0,143], cargo:[143,250], castle:[250,380], seal:[380,502], hunters:[502,646], whisper:[646,776], radar:[776,944], borehole:[944,1049], shape:[1049,1173], glint:[1173,1296], waiting:[1296,1445], finale:[1445,1581] };
+const EV = { trainStop:162, sealStart:439, sealBoom:449, pings:[826,868,910], descent:944, glint:1228, winks:[1502,1551] };
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(58, W / H, 0.1, 400);
+scene.add(camera);
+const sstep = u => { u = THREE.MathUtils.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+const ramp = (t, a, b) => sstep((t - a) / (b - a));
+const lerp = THREE.MathUtils.lerp;
+
+/* ---------- lights ---------- */
+scene.background = new THREE.Color(0x87b5e0);
+const hemi = new THREE.HemisphereLight(0xd8ecff, 0x51663c, 0.9); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1da, 2.0);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -18; sun.shadow.camera.right = 18; sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
+sun.shadow.camera.far = 90; sun.shadow.bias = -0.0004;
+scene.add(sun); scene.add(sun.target);
+const fill = new THREE.DirectionalLight(0xfff4e0, 0.3); scene.add(fill); scene.add(fill.target);
+function sunFrame(cx, cy, cz, dx = 18, dy = 26, dz = 14) {
+  sun.position.set(cx + dx, cy + dy, cz + dz);
+  sun.target.position.set(cx, cy, cz);
+}
+/* palettes: [bg, hemi, sunI, sunCol, fillI, exposure] */
+const PAL = {
+  dusk:  [new THREE.Color(0x51506e), 0.5, 0.85, new THREE.Color(0xff9a4a), 0.45, 1.02],
+  day:   [new THREE.Color(0x87b5e0), 0.92, 2.05, new THREE.Color(0xfff1da), 0.30, 1.05],
+  dayCool:[new THREE.Color(0x8fb8dd), 0.85, 1.85, new THREE.Color(0xf4ecd8), 0.32, 1.04],
+  golden:[new THREE.Color(0x77688a), 0.55, 1.15, new THREE.Color(0xffb257), 0.36, 1.06],
+  dark:  [new THREE.Color(0x04050a), 0.06, 0.0, new THREE.Color(0x000000), 0.0, 1.0],
+};
+function applyPal(name, cx = 0, cz = 8) {
+  const p = PAL[name];
+  scene.background.copy(p[0]); hemi.intensity = p[1]; sun.intensity = p[2]; sun.color.copy(p[3]);
+  fill.intensity = p[4]; renderer.toneMappingExposure = p[5];
+  sunFrame(cx, 1, cz);
+}
+
+/* ---------- ground & landscape ---------- */
+const grass = new THREE.Mesh(new THREE.CircleGeometry(150, 48), new THREE.MeshStandardMaterial({ color: 0x74ac54, roughness: 1 }));
+grass.rotation.x = -Math.PI / 2; grass.receiveShadow = true; scene.add(grass);
+const dirt = new THREE.Mesh(new THREE.PlaneGeometry(90, 4.6), new THREE.MeshStandardMaterial({ color: 0x77694e, roughness: 1 }));
+dirt.rotation.x = -Math.PI / 2; dirt.position.set(-6, 0.005, 8); dirt.receiveShadow = true; scene.add(dirt);
+
+/* ---------- train set ---------- */
+const track = G.makeTrack(64); track.position.set(-10, 0, 8); scene.add(track);
+const hill = G.makeTunnelHill(); hill.position.set(36, 0, 8); scene.add(hill);
+const PORTAL_X = 36 + hill.userData.portalX;   // 19.5
+scene.add(G.makeGroundDressing());   // v2: tufts/bushes/rocks/signpost dressing the hunters' field
+const castle = G.makeCastle(); castle.position.set(41, 6.0, 2.5); castle.rotation.y = -0.15; scene.add(castle);
+// pines on the hill + field
+const pines = [];
+for (const [px, pz, ps] of [[14, 2, 1.1], [22, 16.5, 1.3], [30, -2, 1.0], [26, 22, 1.3], [-8, 3, 1.15], [-20, 15, 1.0], [44, 14, 1.25], [17, -3.5, 0.9]]) {
+  const t = G.makePineTree(ps); t.position.set(px, 0, pz); scene.add(t); pines.push(t);
+}
+// deciduous trees for the 70-year leaf colour shift
+const leafTrees = [];
+for (const [px, pz] of [[-14, 14], [-16, 20], [30, 20.5], [18, 21.5]]) {
+  const t = P.makeTree(1.05); t.position.set(px, 0, pz); scene.add(t); leafTrees.push(t);
+}
+const LEAF_COLS = [new THREE.Color(0x4d8f3a), new THREE.Color(0xc7a23a), new THREE.Color(0x9c5a2e), new THREE.Color(0x5da348)];
+function setLeafPhase(k) { // k 0..3 continuous
+  const mats = [];
+  leafTrees.forEach(t => t.traverse(o => { if (o.isMesh && o.material.color && LEAF_COLS.some(c => o.material.color.equals(c))) mats.push(o.material); }));
+  const a = LEAF_COLS[Math.floor(k) % 4], b = LEAF_COLS[(Math.floor(k) + 1) % 4], u = k - Math.floor(k);
+  const c = a.clone().lerp(b, u);
+  mats.forEach(m => m.color.copy(c));
+}
+
+/* ---------- the train ---------- */
+const train = new THREE.Group(); scene.add(train);
+const loco = G.makeLoco(); train.add(loco);
+const wagons = [];
+for (let i = 0; i < 3; i++) { const w = G.makeGoldWagon(1); w.position.set(-11.9 - i * 6.1, 0, 0); train.add(w); wagons.push(w); }
+train.position.set(-3.15, 0.19, 8);
+// footplate step for the engineer
+const step1 = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.08, 0.5), new THREE.MeshStandardMaterial({ color: 0x22262b }));
+step1.position.set(-1.5, 0.95, 1.62); step1.castShadow = true; loco.add(step1);
+// headlamp beam cone (additive, apex at lamp, opening forward +X)
+function beamTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+  const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, 'rgba(255,230,170,0.85)'); gr.addColorStop(1, 'rgba(255,210,120,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 256);
+  const t = new THREE.CanvasTexture(c); return t;
+}
+const beamMat = new THREE.MeshBasicMaterial({ map: beamTexture(), transparent: true, opacity: 0.34, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, color: 0xffd9a0 });
+const beam = new THREE.Mesh(new THREE.ConeGeometry(1.05, 13, 24, 1, true), beamMat);
+beam.rotation.z = Math.PI / 2;               // cone axis -> +X (apex at lamp after offset)
+beam.position.set(4.6 + 6.5, 3.3, 0);
+loco.add(beam);
+const beamHalo = new THREE.Mesh(new THREE.ConeGeometry(2.0, 13, 24, 1, true),
+  new THREE.MeshBasicMaterial({ map: beamTexture(), transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, color: 0xffc98a }));
+beamHalo.rotation.z = Math.PI / 2; beamHalo.position.copy(beam.position); loco.add(beamHalo);
+const lampLight = new THREE.PointLight(0xffc46b, 18, 13, 1.8); lampLight.position.set(4.75, 3.28, 0); loco.add(lampLight);
+// loose gold crates beside the track (cargo beat dressing)
+const cratePile = new THREE.Group();
+for (let i = 0; i < 4; i++) { const c = G.makeGoldCrate(); c.position.set((i % 2) * 1.15 - 0.5, Math.floor(i / 2) * 0.57, (i % 3) * 0.3); c.rotation.y = i * 0.35; cratePile.add(c); }
+cratePile.position.set(-14.6, 0, 12.4); scene.add(cratePile);
+// sealed-mouth rock pile (appears at seal)
+const sealPile = G.makeRockPile(14, 3.4); sealPile.position.set(PORTAL_X - 0.6, 0.1, 8); sealPile.visible = false; scene.add(sealPile);
+// falling rocks + dust (seal beat)
+const fallRocks = [];
+for (let i = 0; i < 9; i++) {
+  const r = G.makeRock(0.32 + (i % 3) * 0.14);
+  r.userData.home = new THREE.Vector3(PORTAL_X - 0.7 + Math.sin(i * 2.7) * 1.6, 0.35 + (i % 3) * 0.3, 8 + Math.cos(i * 1.9) * 1.7);
+  r.userData.top = r.userData.home.clone(); r.userData.top.y = 5.7 + (i % 4) * 0.35;   // start at the arch crown, never above the roofline
+  r.userData.rot0 = r.rotation.clone();
+  r.position.copy(r.userData.top); r.visible = false; scene.add(r); fallRocks.push(r);
+}
+function glowTexture(inner = 'rgba(255,225,160,1)', mid = 'rgba(255,190,110,0.55)') {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d'); const gr = g.createRadialGradient(64, 64, 2, 64, 64, 64);
+  gr.addColorStop(0, inner); gr.addColorStop(0.35, mid); gr.addColorStop(1, 'rgba(255,180,90,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const glowTex = glowTexture();
+const dustTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 7; i++) {
+    const x = 24 + ((i * 37) % 80), y = 24 + ((i * 53) % 80), r = 18 + ((i * 29) % 26);
+    const gr = g.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, 'rgba(216,204,178,0.20)'); gr.addColorStop(1, 'rgba(216,204,178,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+})();
+const dusts = [];
+for (let i = 0; i < 16; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dustTex, transparent: true, opacity: 0, depthWrite: false }));
+  s.position.set(PORTAL_X - 0.5 + Math.sin(i * 2.2) * 1.8, 1 + (i % 4) * 0.8, 8 + Math.cos(i * 1.7) * 1.6);
+  s.visible = false; scene.add(s); dusts.push(s);
+}
+// flooded-mouth water (whisper insert)
+const water = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 5.4), new THREE.MeshStandardMaterial({ color: 0x1a3648, roughness: 0.12, metalness: 0.85, emissive: 0x0a1826, emissiveIntensity: 0.7 }));
+const waterLight = new THREE.PointLight(0x9fd4ff, 0, 7, 1.6); waterLight.position.set(PORTAL_X - 1.8, 1.3, 9.0); scene.add(waterLight);
+water.rotation.x = -Math.PI / 2; water.position.set(PORTAL_X - 2.2, 0.06, 8); water.visible = false; scene.add(water);
+const diverLight = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xbfe8ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+diverLight.position.set(PORTAL_X - 1.2, 0.5, 8); scene.add(diverLight);
+
+/* ---------- modern props ---------- */
+const radar = G.makeRadar(); scene.add(radar);
+const bore = G.makeBorehole(); bore.position.set(12, 0, 15.5); scene.add(bore);
+const mapMesh = G.makeMap(); scene.add(mapMesh);
+const pingRings = [];
+for (let i = 0; i < 3; i++) {
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.46, 0.55, 40),
+    new THREE.MeshBasicMaterial({ color: 0x9fe8b0, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03; scene.add(ring); pingRings.push(ring);
+}
+
+/* ---------- cavern interior (borehole/shape/glint) ---------- */
+const cavern = new THREE.Group(); cavern.position.set(-60, 0, -40); scene.add(cavern);
+{
+  const rockM = new THREE.MeshStandardMaterial({ color: 0x17181c, roughness: 1, side: THREE.BackSide });
+  const room = new THREE.Mesh(new THREE.BoxGeometry(46, 15, 16), rockM);
+  room.position.y = -5.5; cavern.add(room);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(46, 16), new THREE.MeshStandardMaterial({ color: 0x101114, roughness: 1 }));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -12.98; cavern.add(floor);
+}
+const darkTrain = new THREE.Group();
+{
+  const dl = G.makeLoco();
+  dl.traverse(o => { if (o.isMesh) { o.material = new THREE.MeshStandardMaterial({ color: 0x0b0d10, roughness: 0.92, metalness: 0.25 }); o.castShadow = false; } });
+  darkTrain.add(dl);
+  const dw = G.makeGoldWagon(0);
+  dw.traverse(o => { if (o.isMesh) { o.material = new THREE.MeshStandardMaterial({ color: 0x0a0b0d, roughness: 0.95 }); o.castShadow = false; } });
+  dw.position.set(-11.9, 0, 0); darkTrain.add(dw);
+  darkTrain.position.set(2, -13.0, 0); darkTrain.rotation.y = 0.12;
+  cavern.add(darkTrain);
+}
+{ // rock shaft the pod descends through (walls catch the pod light)
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.35, 9.4, 20, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x17181d, roughness: 1, side: THREE.DoubleSide }));
+  shaft.position.set(6, -2.3, 1.5); cavern.add(shaft);
+  const collar = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.09, 8, 20),
+    new THREE.MeshStandardMaterial({ color: 0x23242a, roughness: 1 }));
+  collar.rotation.x = Math.PI / 2; collar.position.set(6, 2.4, 1.5); cavern.add(collar);
+}
+const cavPod = new THREE.Group();
+{
+  const bodyM = new THREE.MeshStandardMaterial({ color: 0xc8cdd2, metalness: 0.7, roughness: 0.35 });
+  const pb = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.34, 14), bodyM); cavPod.add(pb);
+  const lampM = new THREE.MeshStandardMaterial({ color: 0xfff2b0, emissive: 0xffdf8a, emissiveIntensity: 3.5 });
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.096, 0.096, 0.05, 14), lampM); band.position.y = 0.06; cavPod.add(band);
+  const ls = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), lampM); ls.position.y = -0.2; cavPod.add(ls);
+  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 1, 6), new THREE.MeshStandardMaterial({ color: 0x22262b }));
+  cable.position.y = 0.6; cable.name = 'cable'; cavPod.add(cable);
+  cavPod.position.set(6, 0.5, 1.5);
+  cavern.add(cavPod);
+}
+const podSpot = new THREE.SpotLight(0xffe9b8, 0, 30, 0.62, 0.45, 1.2);
+cavern.add(podSpot); cavern.add(podSpot.target);
+const podGlow = new THREE.PointLight(0xffdf9e, 0, 9, 1.6); cavern.add(podGlow);
+// gold glint sprite (shape/glint beats + finale winks reuse)
+function goldSprite() {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffd777, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  s.scale.setScalar(0.01); return s;
+}
+const glintSpr = goldSprite(); glintSpr.position.set(0, 0, 0); cavern.add(glintSpr);
+glintSpr.position.set(3.55, -10.75, 0.95);   // on the dark loco's boiler flank (cavern-local)
+const winkSpr = goldSprite(); winkSpr.position.set(PORTAL_X - 0.9, 1.6, 8); scene.add(winkSpr);
+// v2: warm key light for the finale hunters (intensity set only in the finale branch)
+const finaleLight = new THREE.PointLight(0xffb377, 0, 22, 1.7); finaleLight.position.set(6.5, 3.0, 26); scene.add(finaleLight);
+
+/* ---------- cast ---------- */
+const NAMES = ['aadmi', 'raja', 'aurat', 'budha', 'sipahi'];
+const chars = {};
+try {
+  for (const n of NAMES) { chars[n] = await loadCharacter(`assets/${n}.glb`, TARGET_HEIGHTS[n]); chars[n].group.visible = false; scene.add(chars[n].group); }
+  const { attachToBone } = await import('./anim.js');
+  attachToBone(chars.raja, 'head', P.makeCap(0x5d4a2a), [0, 0.1, 0.012], [-0.06, 0, 0], [1, 0.78, 1]);       // officer cap (not crown)
+  attachToBone(chars.raja, 'head', P.makeBeard(0x2e2019), [0, -0.092, 0.048], [0.1, 0, 0], 0.74);
+  attachToBone(chars.budha, 'head', P.makeBeard(0xbfbfbf), [0, -0.092, 0.048], [0.1, 0, 0], 0.85);   // v3: +15% size, darker grey — reads in profile
+
+  /* ---------- captions (drawn in-scene, reel pattern) ---------- */
+  function makeCard(w, h, px = 1024, py = 256) {
+    const c = document.createElement('canvas'); c.width = px; c.height = py;
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false, depthTest: false }));
+    m.renderOrder = 20; camera.add(m);
+    return { c, g: c.getContext('2d'), tex, mesh: m };
+  }
+  function drawCaptionText(card, text) {
+    const { c, g, tex } = card;
+    g.clearRect(0, 0, c.width, c.height);
+    let px = 104;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    while (px > 36) { g.font = `800 ${px}px Arial, sans-serif`; if (g.measureText(text).width <= 890) break; px -= 6; }
+    g.lineWidth = Math.max(10, px * 0.15); g.strokeStyle = '#000'; g.lineJoin = 'round';
+    g.strokeText(text, c.width / 2, c.height / 2 + 4);
+    g.fillStyle = '#fff'; g.fillText(text, c.width / 2, c.height / 2 + 4);
+    tex.needsUpdate = true;
+  }
+  const capCard = makeCard(0.82, 0.20); capCard.mesh.position.set(0, -0.56, -1.6);
+  const endCard = makeCard(0.86, 0.22); endCard.mesh.position.set(0, 0.52, -1.6);
+  drawCaptionText(endCard, 'STILL BURIED. STILL WAITING.');
+  const PHRASES = [
+    ['A train full of gold', 'rolled into a dark mountain,', 'and never rolled out again.'],
+    ['The legend says it carried', 'three hundred tons', 'of gold and jewels.'],
+    ['Below a castle in Poland,', 'men had dug a maze', 'of secret tunnels.'],
+    ['They drove the train', 'deep inside, then sealed', 'the mouth with rock.'],
+    ['For seventy years, hunters', 'came with old maps,', 'and went home empty.'],
+    ['Divers swam the flooded tunnels.', 'One old man whispered', 'the secret.'],
+    ['In twenty fifteen, radar found', 'a long train shape', 'under the hill,', 'just where he said.'],
+    ['A camera went down', 'a narrow hole,', 'down into the dark.'],
+    ['Its light found a huge', 'dark shape, long and still', 'as a train.'],
+    ['One tiny point of light', 'winked back from its side,', 'the color of gold.'],
+    ['Nobody has opened it yet.', 'If the legend is true,', 'the gold still waits.'],
+    ['One day someone will open', 'that mountain. Until then,', 'the gold train waits.'],
+  ];
+  const SECORDER = ['hook', 'cargo', 'castle', 'seal', 'hunters', 'whisper', 'radar', 'borehole', 'shape', 'glint', 'waiting', 'finale'];
+  const CHUNKS = [];
+  SECORDER.forEach((sn, i) => {
+    const [a, b] = SEC[sn], parts = PHRASES[i], per = (b - a) / parts.length;
+    parts.forEach((txt, j) => CHUNKS.push({ t0: (a + per * j) / FPS, t1: (a + per * (j + 1)) / FPS, text: txt }));
+  });
+  let lastChunk = -2;
+  function doCaptions(t) {
+    let ci = -1;
+    for (let i = 0; i < CHUNKS.length; i++) if (t >= CHUNKS[i].t0 && t < CHUNKS[i].t1) { ci = i; break; }
+    if (ci !== lastChunk) { if (ci >= 0) drawCaptionText(capCard, CHUNKS[ci].text); lastChunk = ci; }
+    capCard.mesh.material.opacity = ci >= 0
+      ? Math.min(ramp(t, CHUNKS[ci].t0, CHUNKS[ci].t0 + 0.08), 1 - ramp(t, CHUNKS[ci].t1 - 0.07, CHUNKS[ci].t1)) : 0;
+    const f = t * FPS;
+    endCard.mesh.material.opacity = f > 1520 ? ramp(f, 1520, 1545) : 0;
+  }
+
+  /* ---------- train motion ---------- */
+  const TRAIN0 = -3.15;
+  function trainX(f) {
+    if (f <= SEC.hook[1]) { const u = f / SEC.hook[1]; return lerp(TRAIN0, 12.35, 1 - Math.pow(1 - u, 3)); }
+    if (f < 390) return 12.35;
+    if (f <= EV.sealBoom) { const u = (f - 390) / (EV.sealBoom - 390); return lerp(12.35, 47.4, sstep(u)); }
+    return 47.4;
+  }
+  /* ---------- walk tracks (hunters + radar) ---------- */
+  function trackPos(keys, t) {
+    if (t <= keys[0].t) return { x: keys[0].x, z: keys[0].z };
+    for (let i = 0; i < keys.length - 1; i++) {
+      const a = keys[i], b = keys[i + 1];
+      if (t <= b.t) { const u = sstep((t - a.t) / (b.t - a.t)); return { x: lerp(a.x, b.x, u), z: lerp(a.z, b.z, u) }; }
+    }
+    const Lk = keys[keys.length - 1]; return { x: Lk.x, z: Lk.z };
+  }
+  // walk state machine: distance-accumulated phase so feet match ground speed
+  function walker(ch, keys, t, dt = 0.05) {
+    const p0 = trackPos(keys, t), p1 = trackPos(keys, Math.max(0, t - dt));
+    const dist = Math.hypot(p0.x - p1.x, p0.z - p1.z);
+    ch._dist = (ch._dist || 0) + dist;
+    const heading = dist > 0.0004 ? Math.atan2(p0.x - p1.x, p0.z - p1.z) : (ch._heading ?? 0);
+    ch._heading = heading;
+    return { p: p0, speed: dist / dt, heading };
+  }
+  function applyWalk(ch, w, t) {
+    ch.group.position.set(w.p.x, 0, w.p.z);
+    ch.group.rotation.y = w.heading;
+    const amp = THREE.MathUtils.clamp(w.speed / 0.8, 0, 1);
+    if (amp > 0.04) poseWalkGT(ch, (ch._dist / cycleFor(ch)) * Math.PI * 2, { thigh: 0.40 * amp + 0.05, arm: 0.28 * amp, bob: amp });
+    return amp;
+  }
+  // arms-only push override (after poseWalkGT): aim both arms at handle ends + grip
+  function pushArms(ch, tgtL, tgtR) {
+    for (const [S, tgt] of [['L', tgtL], ['R', tgtR]]) {
+      const shoulder = boneWorldPos(ch, `upperarm01.${S}`, new THREE.Vector3());
+      const want = new THREE.Vector3().subVectors(tgt, shoulder).normalize();
+      aimBone(ch, `upperarm01.${S}`, `upperarm02.${S}`, want);
+      aimBone(ch, `upperarm02.${S}`, `lowerarm01.${S}`, want);
+      const elbow = boneWorldPos(ch, `lowerarm01.${S}`, new THREE.Vector3());
+      const fwant = new THREE.Vector3().subVectors(tgt, elbow).normalize();
+      aimBone(ch, `lowerarm01.${S}`, `lowerarm02.${S}`, fwant);
+      setHand(ch, S, { grip: 1, palm: 0.55 });
+    }
+  }
+  function show(...names) { for (const n of NAMES) chars[n].group.visible = names.includes(n); }
+  function camKeys(f, a, b, keys) { // keys: [{u, p, l}] within frame range a..b
+    const u = THREE.MathUtils.clamp((f - a) / (b - a), 0, 1);
+    let A = keys[0], B = keys[keys.length - 1];
+    for (let i = 0; i < keys.length - 1; i++) if (u >= keys[i].u && u <= keys[i + 1].u) { A = keys[i]; B = keys[i + 1]; break; }
+    const k = sstep((u - A.u) / Math.max(1e-5, B.u - A.u));
+    camera.position.set(lerp(A.p[0], B.p[0], k), lerp(A.p[1], B.p[1], k), lerp(A.p[2], B.p[2], k));
+    const lk = [lerp(A.l[0], B.l[0], k), lerp(A.l[1], B.l[1], k), lerp(A.l[2], B.l[2], k)];
+    camera.lookAt(...lk);
+    fill.position.copy(camera.position); fill.target.position.set(...lk);
+    return lk;
+  }
+  const inSec = (f, sn) => f >= SEC[sn][0] && f < SEC[sn][1];
+  const secU = (f, sn) => (f - SEC[sn][0]) / (SEC[sn][1] - SEC[sn][0]);
+
+  // lift crate for the cargo beat
+  const liftCrate = G.makeGoldCrate(); scene.add(liftCrate);
+
+  window.renderFrame = (f) => {
+    const t = f / FPS;
+    const tx = trainX(f);
+    train.position.x = tx;
+    loco.userData.update(tx - TRAIN0);
+    for (const w of wagons) if (w.userData.update) w.userData.update(tx - TRAIN0);   // v2: wagon wheels roll too
+    // defaults each frame
+    beam.visible = inSec(f, 'hook'); beamHalo.visible = beam.visible; water.visible = false; waterLight.intensity = 0; diverLight.material.opacity = 0; finaleLight.intensity = 0;
+    radar.visible = inSec(f, 'radar'); bore.visible = inSec(f, 'borehole') && f < 983;
+    mapMesh.visible = false; liftCrate.visible = inSec(f, 'cargo');
+    sealPile.visible = f >= EV.sealBoom;
+    fallRocks.forEach((r, i) => {   // deterministic in f: correct in any render chunk
+      const u = THREE.MathUtils.clamp((f - EV.sealStart - i * 1.4) / 10, 0, 1);
+      r.position.lerpVectors(r.userData.top, r.userData.home, u * u);
+      r.rotation.set(r.userData.rot0.x + u * (i % 2 ? 2.1 : -1.7), r.userData.rot0.y * (1 - u), r.userData.rot0.z + u * 1.4);
+      r.visible = f >= EV.sealStart;
+    });
+    for (const d of dusts) d.visible = f >= EV.sealBoom && f < EV.sealBoom + 30;
+    cavPod.visible = f >= 983; podSpot.intensity = 0; podGlow.intensity = 0;
+
+    if (inSec(f, 'hook')) {
+      applyPal('dusk', tx + 4, 8); sunFrame(tx + 2, 1, 8, -16, 15, 10);
+      beamMat.opacity = 0.32 + Math.sin(t * 31) * 0.04;
+      show('sipahi');
+      const eng = chars.sipahi;
+      eng.group.position.set(tx - 1.5, 1.01, 9.62); eng.group.rotation.y = Math.PI / 2;
+      poseRestGT(eng, t);
+      const front = tx + 5.15;
+      camera.position.set(front - 8.8, 1.75, 17.6); camera.lookAt(front + 0.2, 2.2, 8);
+      fill.position.copy(camera.position); fill.target.position.set(front + 0.2, 2.2, 8);
+    }
+    else if (inSec(f, 'cargo')) {
+      applyPal('day', -6, 8);
+      show('aadmi', 'sipahi', 'raja');
+      const A = chars.aadmi, S = chars.sipahi, R = chars.raja;
+      // aadmi lifts a crate into wagon3 (world wagon3 centre x = tx-24.1 = -11.75)
+      A.group.position.set(-11.3, 0, 10.9); A.group.rotation.y = Math.PI;
+      const liftU = f < 200 ? ramp(f, 158, 198) : 1 - ramp(f, 214, 246);
+      const cx = -11.3, cy = 0.02 + liftU * 1.30, cz = lerp(10.05, 9.45, liftU);
+      liftCrate.position.set(cx, cy, cz);
+      posePush(A, t, new THREE.Vector3(cx - 0.3, cy + 0.58, cz + 0.1), new THREE.Vector3(cx + 0.3, cy + 0.58, cz + 0.1));
+      // sipahi worker stacking at wagon2, raja (officer, cap) supervising
+      S.group.position.set(-4.2, 0, 10.6); S.group.rotation.y = Math.PI + 0.4; poseRestGT(S, t + 1.3);
+      R.group.position.set(-2.2, 0, 12.6); R.group.rotation.y = -2.2; poseRestGT(R, t + 0.6); poseLookAround(R, t, 0.35);
+      if (f < 196) camKeys(f, 143, 196, [
+        { u: 0, p: [-9.6, 1.8, 14.6], l: [-11.2, 1.2, 10.2] }, { u: 1, p: [-11.0, 2.0, 13.4], l: [-11.05, 1.3, 9.8] }]);
+      else camKeys(f, 196, 250, [
+        { u: 0, p: [-11.0, 2.0, 13.4], l: [-11.05, 1.3, 9.8] }, { u: 1, p: [-17.5, 7.2, 17.0], l: [-6.5, 0.8, 8] }]);
+    }
+    else if (inSec(f, 'castle')) {
+      applyPal('day', 26, 8);
+      show();
+      camKeys(f, 250, 380, [
+        { u: 0, p: [-14, 2.6, 30], l: [26, 4.0, 8] }, { u: 1, p: [7, 8.5, 36], l: [29, 4.6, 6] }]);
+    }
+    else if (inSec(f, 'seal')) {
+      applyPal('day', 14, 8);
+      show('aadmi', 'sipahi');
+      const eng = chars.sipahi;
+      eng.group.position.set(tx - 1.5, 1.01, 9.62); eng.group.rotation.y = Math.PI / 2; poseRestGT(eng, t);
+      const A = chars.aadmi;
+      A.group.position.set(1.5, 0, 13.0); A.group.rotation.y = 1.15; poseRestGT(A, t + 0.4);
+      if (f >= EV.sealBoom && f < EV.sealBoom + 16) poseStartle(A, Math.sin((f - EV.sealBoom) / 16 * Math.PI));
+      dusts.forEach((d, i) => {
+        const u = (f - EV.sealBoom) / 28;
+        d.material.opacity = 0.85 * Math.max(0, 1 - u); const sc = 1.7 + u * 6.8; d.scale.set(sc, sc * 0.8, 1);
+      });
+      const lk = camKeys(f, 380, 502, [
+        { u: 0, p: [5.5, 2.1, 16.8], l: [18.0, 2.6, 8] }, { u: 1, p: [10.5, 2.3, 15.0], l: [18.0, 2.4, 8] }]);
+      if (f >= EV.sealBoom && f < EV.sealBoom + 7) {
+        const sh = Math.sin(f * 7.3) * 0.055 * (1 - (f - EV.sealBoom) / 7);
+        camera.position.y += sh; camera.position.x += sh * 0.6; camera.lookAt(...lk);
+      }
+    }
+    else if (inSec(f, 'hunters')) {
+      applyPal('dayCool', 8, 14);
+      // 70-year flash cycle f520-575: light + leaves shift fast
+      if (f >= 520 && f < 578) {
+        const ph = (f - 520) / 58, s = (Math.sin(ph * Math.PI * 5) + 1) / 2, env = Math.sin(ph * Math.PI);
+        scene.background.copy(PAL.dayCool[0]).lerp(PAL.dusk[0], s * env * 0.8);
+        sun.intensity = lerp(PAL.dayCool[2], PAL.dusk[2], s * env);
+        setLeafPhase(ph * 3);
+      } else setLeafPhase(0);
+      show('aadmi', 'aurat');
+      const A = chars.aadmi, U = chars.aurat;
+      const aKeys = [{ t: 16.7, x: 1.5, z: 16.0 }, { t: 19.8, x: 9.5, z: 14.3 }, { t: 21.15, x: 9.5, z: 14.3 }, { t: 21.53, x: 15.0, z: 12.9 }];
+      const uKeys = [{ t: 16.7, x: 0.6, z: 16.9 }, { t: 19.9, x: 8.6, z: 15.3 }, { t: 21.15, x: 8.6, z: 15.3 }, { t: 21.53, x: 14.2, z: 13.9 }];
+      const stopped = t >= 19.75 && t < 21.2;
+      // ---- v3: main walk f502-594 is Kimodo mocap (foot-locked bake).
+      // Group travel is paced by the clip's own distance curve (feet match
+      // ground); the last 7 frames ease position + pose into the v2 stop.
+      const KW = { sf0: 30, rate: 1.11, phaseU: 20, sA: { x: 5.75, z: 14.85 }, eA: { x: 9.5, z: 14.3 }, sU: { x: 4.85, z: 15.75 }, eU: { x: 8.6, z: 15.3 } };
+      let camFocus = null;
+      if (f < 595) {
+        const sfA = KW.sf0 + (f - 502) * KW.rate;
+        const pr = windowProgress(KWALK_AADMI, KW.sf0, KW.sf0 + 93 * KW.rate, sfA);
+        const ease = ramp(f, 588, 595);
+        for (const [ch, data, sf, S, E] of [[A, KWALK_AADMI, sfA, KW.sA, KW.eA], [U, KWALK_AURAT, sfA + KW.phaseU, KW.sU, KW.eU]]) {
+          const hd = Math.atan2(E.x - S.x, E.z - S.z);
+          ch.group.position.set(lerp(lerp(S.x, E.x, pr), E.x, ease), 0, lerp(lerp(S.z, E.z, pr), E.z, ease));
+          ch.group.rotation.y = hd; ch._heading = hd;
+          poseRestGT(ch, t);
+          blendKimodo(ch, sampleKimodo(data, sf), 1 - ease);
+        }
+        camFocus = A.group.position;
+      } else {
+        const wa = walker(A, aKeys, t), wu = walker(U, uKeys, t);
+        const ampA = applyWalk(A, wa, t), ampU = applyWalk(U, wu, t);
+        if (ampA <= 0.04) {
+          if (stopped) {
+            // hold the map up and study it
+            const fw = new THREE.Vector3(Math.sin(A.group.rotation.y), 0, Math.cos(A.group.rotation.y));
+            mapMesh.visible = true;
+            mapMesh.position.copy(A.group.position).addScaledVector(fw, 0.46); mapMesh.position.y = 1.28;
+            mapMesh.rotation.set(-0.28, A.group.rotation.y + Math.PI, 0);
+            mapMesh.updateMatrixWorld(true);
+            const cL = mapMesh.localToWorld(new THREE.Vector3(-0.31, 0.23, 0));
+            const cR = mapMesh.localToWorld(new THREE.Vector3(0.31, 0.23, 0));
+            poseHoldMap(A, t, cL, cR);
+            poseLookAround(A, t, 0.4);
+          } else poseRestGT(A, t);
+        }
+        if (ampU <= 0.04) {
+          poseRestGT(U, t + 2.1);
+          if (stopped) poseLookAround(U, t * 0.9, 0.8);
+        }
+        if (f >= 612 && f < 640) { poseHeadShake(A, t, ramp(f, 612, 620) * (1 - ramp(f, 632, 640))); poseHeadShake(U, t + 0.2, ramp(f, 614, 622) * (1 - ramp(f, 632, 640))); }
+        camFocus = wa.p;
+      }
+      if (window.__gaitCam) {
+        // spot-gate override: pure side view of aadmi, both hunters in frame
+        const hd = Math.atan2(KW.eA.x - KW.sA.x, KW.eA.z - KW.sA.z);
+        const px = Math.cos(hd), pz = -Math.sin(hd);
+        camera.position.set(camFocus.x + px * 4.4, 1.15, camFocus.z + pz * 4.4);
+        camera.lookAt(camFocus.x, 0.95, camFocus.z);
+        fill.position.copy(camera.position); fill.target.position.set(camFocus.x, 0.95, camFocus.z);
+      } else {
+        camera.position.set(camFocus.x - 3.0, 2.1, camFocus.z + 5.8); camera.lookAt(camFocus.x + 0.4, 1.0, camFocus.z - 0.4);
+        fill.position.copy(camera.position); fill.target.position.set(camFocus.x + 0.4, 1.0, camFocus.z - 0.4);
+      }
+    }
+    else if (inSec(f, 'whisper')) {
+      applyPal('dayCool', 16, 11);
+      show('budha', 'aadmi');
+      const B = chars.budha, A = chars.aadmi;
+      B.group.position.set(14.9, 0, 12.2); B.group.rotation.y = 1.15;
+      A.group.position.set(15.75, 0, 12.45); A.group.rotation.y = -1.85;
+      const insert = f >= 716 && f < 758;
+      if (insert) {
+        show();
+        water.visible = true; waterLight.intensity = 7;
+        diverLight.material.opacity = 0.55 + Math.sin(t * 2.4) * 0.25;
+        diverLight.position.x = PORTAL_X - 1.6 + Math.sin(t * 0.7) * 0.5;
+        diverLight.position.z = 9.3 + Math.cos(t * 0.5) * 0.3;
+        camera.position.set(11.8, 1.5, 12.6); camera.lookAt(PORTAL_X + 0.2, 0.55, 8.2);
+        fill.position.copy(camera.position); fill.target.position.set(PORTAL_X + 0.2, 0.55, 8.2);
+        sunFrame(16, 1, 9);
+      } else {
+        poseRestGT(B, t); poseRestGT(A, t + 1.1);
+        const lean = ramp(f, 664, 690) * (1 - ramp(f, 752, 772));
+        if (lean > 0.001) { poseLean(B, t, lean, 1); rotBone(B, 'neck01', 0, -0.3 * lean, 0); B.group.position.x = 14.9 + 0.38 * lean; }
+        const st = ramp(f, 690, 700) * (1 - ramp(f, 706, 716));
+        if (st > 0.001) poseStartle(A, st);
+        if (f >= 758) { rotBone(A, 'neck01', 0, -0.4, 0); rotBone(B, 'neck01', 0, 0.2, 0); }
+        // v3: camera rotated ~15° around the look point toward budha's front
+        // (beard + lean read in near-profile-to-frontal instead of back-3/4)
+        camKeys(f, 646, 776, [
+          { u: 0, p: [14.44, 1.72, 15.65], l: [15.35, 1.35, 12.3] }, { u: 1, p: [14.88, 1.66, 14.60], l: [15.35, 1.33, 12.3] }]);
+        sunFrame(17, 1, 11);
+      }
+    }
+    else if (inSec(f, 'radar')) {
+      applyPal('dayCool', 8, 14);
+      show('aadmi', 'aurat');
+      const rx = f < 795 ? 4.5 : f > 925 ? 10.0 : lerp(4.5, 10.0, sstep((f - 795) / 130));
+      radar.position.set(rx, 0, 14.3); radar.rotation.y = 0.8; radar.updateMatrixWorld(true);
+      const A = chars.aadmi, U = chars.aurat;
+      // aadmi pushes: walk legs, arms on the handle (targets in radar-local space)
+      const aPos = radar.localToWorld(new THREE.Vector3(-1.28, 0, 0));
+      A.group.position.set(aPos.x, 0, aPos.z); A.group.rotation.y = Math.PI / 2 + 0.8;
+      const pushing = f >= 795 && f <= 925;
+      const spd = pushing ? (10.0 - 4.5) / (130 / FPS) : 0;
+      A._dist = (A._dist || 0) + spd / FPS;
+      if (pushing) poseWalkGT(A, (A._dist / cycleFor(A)) * Math.PI * 2, { thigh: 0.34, arm: 0.1, bob: 0.8 });
+      else poseRestGT(A, t);
+      A.group.updateMatrixWorld(true);
+      pushArms(A, radar.localToWorld(new THREE.Vector3(-0.72, 1.02, -0.26)), radar.localToWorld(new THREE.Vector3(-0.72, 1.02, 0.26)));
+      // aurat walks alongside, then watches the screen
+      const uPos = radar.localToWorld(new THREE.Vector3(f < 880 ? -2.15 : -1.7, 0, 1.3));
+      U.group.position.set(uPos.x, 0, uPos.z); U.group.rotation.y = Math.PI / 2 + 0.8 - (f < 880 ? 0 : 0.5);
+      if (pushing && f < 880) { U._dist = (U._dist || 0) + spd / FPS; poseWalkGT(U, (U._dist / cycleFor(U)) * Math.PI * 2, { thigh: 0.34, arm: 0.26, bob: 0.8 }); }
+      else { poseRestGT(U, t + 0.8); rotBone(U, 'neck01', 0.22, -0.3, 0); }
+      // pings: rings + screen
+      let blip = 0;
+      EV.pings.forEach((p, i) => {
+        if (f >= p && f < p + 32) {
+          const u = (f - p) / 32, ring = pingRings[i];
+          ring.visible = true;
+          ring.position.x = lerp(4.5, 10.0, sstep((p - 795) / 130)); ring.position.z = 14.3;
+          ring.scale.setScalar(0.9 + u * 4.2); ring.material.opacity = 0.9 * (1 - u);
+          blip = Math.max(blip, 1 - (f - p) / 34);
+        } else pingRings[i].visible = false;
+      });
+      radar.userData.drawScreen(blip, ramp(f, 905, 938));
+      const push = ramp(f, 892, 930);
+      camera.position.set(lerp(rx - 2.7, rx - 1.6, push), lerp(1.6, 1.4, push), lerp(19.8, 18.6, push));
+      camera.lookAt(rx - 0.2, 0.95, 14.55);
+      fill.position.copy(camera.position); fill.target.position.set(rx - 0.2, 0.95, 14.55);
+    }
+    else if (inSec(f, 'borehole')) {
+      if (f < 983) {
+        applyPal('dayCool', 12, 15);
+        show('aadmi', 'aurat');
+        const A = chars.aadmi, U = chars.aurat;
+        A.group.position.set(10.9, 0, 14.1); A.group.rotation.y = 2.55; poseRestGT(A, t); rotBone(A, 'neck01', 0.34, 0, 0);
+        U.group.position.set(13.4, 0, 14.2); U.group.rotation.y = -2.7; poseRestGT(U, t + 1.4); rotBone(U, 'neck01', 0.34, 0, 0);
+        bore.userData.setPodDepth(ramp(f, 952, 1040) * 5.5);
+        camKeys(f, 944, 983, [
+          { u: 0, p: [9.2, 1.95, 19.4], l: [12, 1.0, 15.5] }, { u: 1, p: [10.6, 1.5, 17.4], l: [12, 0.6, 15.5] }]);
+      } else {
+        applyPal('dark'); hemi.intensity = 0.05;
+        show();
+        const u = (f - 983) / 66;
+        cavPod.position.y = lerp(0.5, -6.0, sstep(u));
+        const cable = cavPod.getObjectByName('cable');
+        cable.scale.y = 1 + u * 7; cable.position.y = 0.6 + u * 3.5;
+        podSpot.intensity = 320; podGlow.intensity = 40;
+        podSpot.position.copy(cavPod.position); podSpot.position.y += 0.1;
+        podSpot.target.position.set(cavPod.position.x - 1.5, -13, cavPod.position.z + 0.5);
+        podGlow.position.copy(cavPod.position);
+        camera.position.set(-53.5, cavPod.position.y + 1.5, -37.85); camera.lookAt(-54, cavPod.position.y - 0.4, -38.5);
+        fill.intensity = 0;
+      }
+    }
+    else if (inSec(f, 'shape') || inSec(f, 'glint')) {
+      applyPal('dark'); hemi.intensity = 0.05; fill.intensity = 0;
+      show();
+      const gl = inSec(f, 'glint');
+      const u = gl ? secU(f, 'glint') : secU(f, 'shape');
+      cavPod.visible = true;
+      cavPod.position.y = gl ? -9.9 : lerp(-6.0, -9.6, sstep(u));
+      cavPod.position.x = gl ? 1.2 : lerp(6, 0.5, sstep(u));
+      const cable = cavPod.getObjectByName('cable');
+      cable.scale.y = 8.4; cable.position.y = 4.3;
+      podSpot.intensity = 340; podGlow.intensity = 30;
+      podSpot.position.copy(cavPod.position);
+      // light rakes along the train flank
+      const sweepX = gl ? 3.6 : lerp(7.5, -1.5, sstep(u));
+      podSpot.target.position.set(sweepX, -12.6, 0.8);
+      podGlow.position.copy(cavPod.position);
+      if (gl) {
+        camera.position.set(-54.6 - 1.8 * u, -6.4 - 1.2 * u, -34.9);
+        camera.lookAt(-56.4, -10.7, -38.9);
+        const g = f < EV.glint ? ramp(f, EV.glint - 8, EV.glint) : (1 - ramp(f, EV.glint + 22, EV.glint + 44));
+        glintSpr.material.opacity = 0.95 * g; glintSpr.scale.setScalar(0.05 + 0.5 * g);
+      } else {
+        camera.position.set(lerp(-51.5, -54.8, u), lerp(-3.4, -5.6, u), -33.9);
+        camera.lookAt(lerp(-56, -59, u), -10.6, -39.2);
+        glintSpr.material.opacity = 0;
+      }
+    }
+    else if (inSec(f, 'waiting')) {
+      const u = secU(f, 'waiting');
+      applyPal('dayCool', 14, 10);
+      scene.background.copy(PAL.dayCool[0]).lerp(PAL.golden[0], u * 0.65);
+      sun.intensity = lerp(PAL.dayCool[2], PAL.golden[2], u * 0.65);
+      sun.color.copy(PAL.dayCool[3]).lerp(PAL.golden[3], u * 0.65);
+      show();
+      camKeys(f, 1296, 1445, [
+        { u: 0, p: [0, 2.6, 25], l: [17.9, 2.3, 8] }, { u: 1, p: [7.5, 2.05, 20.5], l: [17.9, 2.2, 8] }]);
+    }
+    else { // finale
+      applyPal('golden', 20, 10); sunFrame(24, 2, 8, -18, 13, 12);
+      show('aadmi', 'aurat');
+      const A = chars.aadmi, U = chars.aurat;
+      // v2: hunters closer to camera + warm key light so they don't read small/dark
+      A.group.position.set(9.8, 0, 20.6); A.group.rotation.y = 1.25; poseRestGT(A, t);
+      U.group.position.set(11.4, 0, 21.5); U.group.rotation.y = 1.2; poseRestGT(U, t + 1.7);
+      finaleLight.intensity = 55;
+      // v2 wink: envelope has a floor (visible AT f1502/f1551, not just mid-pulse),
+      // bigger additive sprite, and opacity is reset every frame (no lingering glow)
+      winkSpr.material.opacity = 0;
+      for (const w of EV.winks) {
+        if (f >= w && f < w + 13) {
+          const u = (f - w) / 13, s = 0.5 + 0.5 * Math.sin(u * Math.PI);
+          winkSpr.material.opacity = 0.95 * s; winkSpr.scale.setScalar(0.14 + 0.6 * s);
+        }
+      }
+      // v3: ONE continuous push-in — v2's wide (hill + castle + mouth + wink)
+      // held through both winks, then a glide to a medium two-shot on the
+      // hunters for the end card. No cut.
+      camKeys(f, 1445, 1581, [
+        { u: 0, p: [-2, 3.2, 28], l: [25, 3.4, 8] },
+        { u: 0.78, p: [5, 2.8, 27.5], l: [16, 2.2, 13] },
+        { u: 1, p: [10.9, 1.55, 25.4], l: [10.75, 1.05, 21.0] }]);
+    }
+
+    doCaptions(t);
+    renderer.render(scene, camera);
+  };
+  window.__scene = scene; window.__cam = camera; window.__renderer = renderer; window.__THREE = THREE;
+  window.__scaleLog = window.__scaleLog || {};
+  window.ready = true;
+} catch (e) { console.log('ERR ' + e.message + ' ' + e.stack); window.err = e.message; }
+</script></body></html>
