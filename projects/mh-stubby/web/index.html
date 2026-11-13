@@ -1,0 +1,466 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.js","three/addons/":"./lib/addons/"}}</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script type="module">
+import * as THREE from 'three';
+import { loadCharacter, TARGET_HEIGHTS, rotBone } from './charlib.js';
+import { poseIdle, poseWave } from './anim.js';
+import { setHand, setHands, poseRestGT, poseWalkGT, posePush, poseHoldMap, poseLean, poseHeadShake, poseLookAround, poseStartle, cycleFor } from './anim2.js';
+import { aimBone, boneWorldPos } from './anim.js';
+import * as P from './props.js';
+import * as G from './props2.js';
+import { makeDog, poseDog, makeTent, makeFlag, makeTrench, makeWire, makeCraterField, makeShip, makePedestal, makeMedal } from './stubby.js';
+
+const W = 1080, H = 1920, FPS = 30, TOTAL = 1509;
+// FROZEN beat map — from the treated tren voice's actual chunk timings
+// (audio/timing.json, Whisper small.en gate 0.9688). Never re-time the voice.
+const SEC = { hook:[0,128], camp:[128,317], ship:[317,435], salute:[435,554], gas:[554,718], rescue:[718,836], spy:[836,995], sergeant:[995,1222], parade:[1222,1345], museum:[1345,1509] };
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(58, W / H, 0.1, 500);
+scene.add(camera);
+const sstep = u => { u = THREE.MathUtils.clamp(u, 0, 1); return u * u * (3 - 2 * u); };
+const ramp = (t, a, b) => sstep((t - a) / (b - a));
+const lerp = THREE.MathUtils.lerp;
+
+/* ---------- lights (v4 easeLights system, verbatim discipline) ---------- */
+scene.background = new THREE.Color(0x87b5e0);
+const hemi = new THREE.HemisphereLight(0xd8ecff, 0x51663c, 0.9); scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1da, 2.0);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -20; sun.shadow.camera.right = 20; sun.shadow.camera.top = 20; sun.shadow.camera.bottom = -20;
+sun.shadow.camera.far = 120; sun.shadow.bias = -0.0004;
+scene.add(sun); scene.add(sun.target);
+const fill = new THREE.DirectionalLight(0xfff4e0, 0.3); scene.add(fill); scene.add(fill.target);
+const finaleLight = new THREE.PointLight(0xffd9a0, 0, 26, 1.6); finaleLight.position.set(-60, 4.2, 66); scene.add(finaleLight);
+const waterLight = new THREE.PointLight(0x9fd4ff, 0, 30, 1.6); waterLight.position.set(60, 3, 8); scene.add(waterLight);
+function sunFrame(cx, cy, cz, dx = 18, dy = 26, dz = 14) {
+  lightWant.sunPos.set(cx + dx, cy + dy, cz + dz);
+  lightWant.sunTgt.set(cx, cy, cz);
+}
+const PAL = {
+  dusk:  [new THREE.Color(0x51506e), 0.5, 0.85, new THREE.Color(0xff9a4a), 0.45, 1.02],
+  day:   [new THREE.Color(0x87b5e0), 0.92, 2.05, new THREE.Color(0xfff1da), 0.30, 1.05],
+  dayCool:[new THREE.Color(0x8fb8dd), 0.85, 1.85, new THREE.Color(0xf4ecd8), 0.32, 1.04],
+  golden:[new THREE.Color(0x77688a), 0.55, 1.15, new THREE.Color(0xffb257), 0.36, 1.06],
+  night: [new THREE.Color(0x131a2c), 0.16, 0.22, new THREE.Color(0x9db8dd), 0.10, 1.0],
+  dark:  [new THREE.Color(0x1c1a17), 0.30, 0.35, new THREE.Color(0xffc98a), 0.22, 1.02],
+};
+function applyPal(name, cx = 0, cz = 8) {
+  const p = PAL[name];
+  lightWant.bg.copy(p[0]); lightWant.hemi = p[1]; lightWant.sunI = p[2]; lightWant.sunCol.copy(p[3]);
+  lightWant.fillI = p[4]; lightWant.expo = p[5];
+  sunFrame(cx, 1, cz);
+}
+const lightWant = { bg: new THREE.Color(0x87b5e0), hemi: 0.9, sunI: 2.0, sunCol: new THREE.Color(0xfff1da), fillI: 0.3, expo: 1.05, sunPos: new THREE.Vector3(18, 27, 22), sunTgt: new THREE.Vector3(0, 1, 8), finale: 0, water: 0 };
+const lightNow = { bg: new THREE.Color(0x87b5e0), hemi: 0.9, sunI: 2.0, sunCol: new THREE.Color(0xfff1da), fillI: 0.3, expo: 1.05, sunPos: new THREE.Vector3(18, 27, 22), sunTgt: new THREE.Vector3(0, 1, 8), finale: 0, water: 0, snapped: false };
+function easeLights() {
+  const w = lightWant, n = lightNow;
+  if (!n.snapped) {
+    n.bg.copy(w.bg); n.hemi = w.hemi; n.sunI = w.sunI; n.sunCol.copy(w.sunCol);
+    n.fillI = w.fillI; n.expo = w.expo; n.sunPos.copy(w.sunPos); n.sunTgt.copy(w.sunTgt);
+    n.finale = w.finale; n.water = w.water; n.snapped = true;
+  } else {
+    const k = 0.15;
+    n.bg.lerp(w.bg, k); n.sunCol.lerp(w.sunCol, k);
+    n.sunPos.lerp(w.sunPos, k); n.sunTgt.lerp(w.sunTgt, k);
+    n.hemi += (w.hemi - n.hemi) * k; n.sunI += (w.sunI - n.sunI) * k;
+    n.fillI += (w.fillI - n.fillI) * k; n.expo += (w.expo - n.expo) * k;
+    n.finale += (w.finale - n.finale) * k; n.water += (w.water - n.water) * k;
+  }
+  scene.background.copy(n.bg); hemi.intensity = n.hemi;
+  sun.intensity = n.sunI; sun.color.copy(n.sunCol);
+  fill.intensity = n.fillI; renderer.toneMappingExposure = n.expo;
+  sun.position.copy(n.sunPos); sun.target.position.copy(n.sunTgt);
+  finaleLight.intensity = n.finale; waterLight.intensity = n.water;
+}
+
+/* ---------- ground helper ---------- */
+function groundDisc(x, z, r, color) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 40), new THREE.MeshStandardMaterial({ color, roughness: 1 }));
+  m.rotation.x = -Math.PI / 2; m.position.set(x, 0, z); m.receiveShadow = true; scene.add(m); return m;
+}
+
+/* ---------- CAMP set (origin) ---------- */
+const campG = new THREE.Group(); scene.add(campG);
+campG.add((() => { const g = groundDisc(0, 0, 60, 0x74ac54); campG.attach(g); return g; })());
+const tent1 = makeTent(); tent1.position.set(-3.4, 0, -2.6); tent1.rotation.y = 0.5; campG.add(tent1);
+const tent2 = makeTent(); tent2.position.set(3.8, 0, -3.4); tent2.rotation.y = -0.4; campG.add(tent2);
+const tent3 = makeTent(); tent3.position.set(-6.5, 0, 2.5); tent3.rotation.y = 1.2; campG.add(tent3);
+const flag = makeFlag(); flag.position.set(0.5, 0, -6.5); campG.add(flag);
+for (const [px, pz, ps] of [[-10, -6, 1.2], [11, -4, 1.0], [-12, 5, 1.1], [13, 6, 1.25], [7, -9, 0.9]]) {
+  const t = P.makeTree(ps); t.position.set(px, 0, pz); campG.add(t);
+}
+const crateCamp = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: 0x77603c, roughness: 1 }));
+crateCamp.position.set(2.2, 0.3, -1.2); crateCamp.castShadow = true; campG.add(crateCamp);
+
+/* ---------- SHIP set (60,0,0) ---------- */
+const shipG = new THREE.Group(); shipG.position.set(60, 0, 0); scene.add(shipG);
+const sea = new THREE.Mesh(new THREE.CircleGeometry(70, 40), new THREE.MeshStandardMaterial({ color: 0x2c5a78, roughness: 0.35, metalness: 0.4 }));
+sea.rotation.x = -Math.PI / 2; sea.position.set(60, -0.55, 0); sea.receiveShadow = true; scene.add(sea);
+const ship = makeShip(); shipG.add(ship);
+
+/* ---------- TRENCH set (0,0,60) ---------- */
+const trenchG = new THREE.Group(); trenchG.position.set(0, 0, 60); scene.add(trenchG);
+trenchG.add((() => { const g = groundDisc(0, 60, 60, 0x6b6248); trenchG.attach(g); return g; })());
+const trench = makeTrench(18); trenchG.add(trench);
+const wire1 = makeWire(14); wire1.position.set(0, 0, -5.5); trenchG.add(wire1);
+const medalBoard = makeMedal(); medalBoard.position.set(-3.4, 1.15, 59.05 + 0); medalBoard.position.set(-3.4, 1.15, -0.9 + 60 - 60); // local below
+medalBoard.position.set(-3.4, 1.12, -0.92); trenchG.add(medalBoard);
+// sketch map the spy holds (reuses goldtrain map builder)
+const spyMap = G.makeMap(); spyMap.scale.setScalar(0.8);
+
+/* ---------- NO-MAN'S-LAND set (60,0,60) ---------- */
+const nomansG = new THREE.Group(); nomansG.position.set(60, 0, 60); scene.add(nomansG);
+nomansG.add((() => { const g = groundDisc(60, 60, 60, 0x59503c); nomansG.attach(g); return g; })());
+const craters = makeCraterField(); nomansG.add(craters);
+const wire2 = makeWire(12); wire2.position.set(-4, 0, -7); nomansG.add(wire2);
+
+/* ---------- PARADE set (-60,0,0) ---------- */
+const paradeG = new THREE.Group(); paradeG.position.set(-60, 0, 0); scene.add(paradeG);
+paradeG.add((() => { const g = groundDisc(-60, 0, 60, 0x7aa45c); paradeG.attach(g); return g; })());
+const road = new THREE.Mesh(new THREE.PlaneGeometry(46, 3.4), new THREE.MeshStandardMaterial({ color: 0x8d8578, roughness: 1 }));
+road.rotation.x = -Math.PI / 2; road.position.set(-60, 0.01, 0); road.receiveShadow = true; scene.add(road);
+const house1 = P.makeHouse(); house1.position.set(-68, 0, -6.5); house1.rotation.y = 0.25; paradeG.add(house1);
+const house2 = P.makeHouse(); house2.position.set(-52, 0, -7); house2.rotation.y = -0.15; paradeG.add(house2);
+const lamp1 = P.makeLampPost(); lamp1.position.set(-66, 0, 2.6); paradeG.add(lamp1);
+const lamp2 = P.makeLampPost(); lamp2.position.set(-54, 0, 2.6); paradeG.add(lamp2);
+const flag2 = makeFlag(); flag2.position.set(-47, 0, -5); paradeG.add(flag2);
+
+/* ---------- MUSEUM set (-60,0,60) ---------- */
+const museumG = new THREE.Group(); museumG.position.set(-60, 0, 60); scene.add(museumG);
+const mfloor = new THREE.Mesh(new THREE.CircleGeometry(30, 40), new THREE.MeshStandardMaterial({ color: 0x9a917e, roughness: 0.6 }));
+mfloor.rotation.x = -Math.PI / 2; mfloor.position.set(-60, 0, 60); mfloor.receiveShadow = true; scene.add(mfloor);
+const pedestal = makePedestal(); museumG.add(pedestal);
+
+/* ---------- cast ---------- */
+const NAMES = ['aadmi', 'raja', 'budha', 'sipahi'];
+const chars = {};
+try {
+  for (const n of NAMES) { chars[n] = await loadCharacter(`assets/${n}.glb`, TARGET_HEIGHTS[n]); chars[n].group.visible = false; scene.add(chars[n].group); }
+  const { attachToBone } = await import('./anim.js');
+  attachToBone(chars.raja, 'head', P.makeCap(0x4a4438), [0, 0.088, 0.012], [-0.06, 0, 0], [1.05, 0.8, 1.05]);   // officer cap
+  attachToBone(chars.sipahi, 'head', P.makeCap(0x4a5d23), [0, 0.088, 0.012], [-0.06, 0, 0], [1.05, 0.8, 1.05]); // soldier cap
+  attachToBone(chars.budha, 'head', P.makeBeard(0x8a8078), [0, -0.092, 0.048], [0.1, 0, 0], 0.8);        // spy: grey beard
+  scene.add(spyMap); spyMap.visible = false;
+
+  /* ---------- the dog ---------- */
+  const dog = makeDog(); scene.add(dog);
+
+  /* ---------- captions (reel pattern, copied discipline) ---------- */
+  function makeCard(w, h, px = 1024, py = 256) {
+    const c = document.createElement('canvas'); c.width = px; c.height = py;
+    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false, depthTest: false }));
+    m.renderOrder = 20; camera.add(m);
+    return { c, g: c.getContext('2d'), tex, mesh: m };
+  }
+  function drawCaptionText(card, text) {
+    const { c, g, tex } = card;
+    g.clearRect(0, 0, c.width, c.height);
+    let px = 104;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    while (px > 36) { g.font = `800 ${px}px Arial, sans-serif`; if (g.measureText(text).width <= 890) break; px -= 6; }
+    g.lineWidth = Math.max(10, px * 0.15); g.strokeStyle = '#000'; g.lineJoin = 'round';
+    g.strokeText(text, c.width / 2, c.height / 2 + 4);
+    g.fillStyle = '#fff'; g.fillText(text, c.width / 2, c.height / 2 + 4);
+    tex.needsUpdate = true;
+  }
+  const capCard = makeCard(0.82, 0.20); capCard.mesh.position.set(0, -0.56, -1.6);
+  const endCard = makeCard(0.86, 0.22); endCard.mesh.position.set(0, 0.52, -1.6);
+  drawCaptionText(endCard, 'STILL ON DUTY.');
+  const PHRASES = [
+    ['A stray with no name', 'ended the war a Sergeant,', 'with an enemy spy caught in his teeth.'],
+    ['In nineteen seventeen,', 'he trotted into an American camp at Yale,', 'and Private Conroy hid him in the barracks.'],
+    ['When the troop ship sailed,', 'he crossed to France', "hidden inside Conroy's coat."],
+    ['He learned every bugle call,', 'and saluted the officers', 'like a true soldier.'],
+    ['His nose beat every alarm:', 'he smelled mustard gas', 'before any soldier,', 'and barked the camp awake.'],
+    ['In no-man\u2019s-land', 'he found the wounded,', 'telling friend from enemy', 'by their voices.'],
+    ['He caught a German spy', 'sketching the trenches,', 'grabbed the seat of his pants,', 'and held him till help came.'],
+    ['The army made him Sergeant,', 'the first dog ever given a rank.', 'A grenade wounded him;', 'he healed, and returned to the line.'],
+    ['Seventeen battles.', 'Then parades,', 'and a meeting with the President.'],
+    ['And Sergeant Stubby', 'stands on duty still,', "in America's national museum,", 'the Smithsonian.'],
+  ];
+  const SECORDER = ['hook', 'camp', 'ship', 'salute', 'gas', 'rescue', 'spy', 'sergeant', 'parade', 'museum'];
+  const CHUNKS = [];
+  SECORDER.forEach((sn, i) => {
+    const [a, b] = SEC[sn], parts = PHRASES[i], per = (b - a) / parts.length;
+    parts.forEach((txt, j) => CHUNKS.push({ t0: (a + per * j) / FPS, t1: (a + per * (j + 1)) / FPS, text: txt }));
+  });
+  let lastChunk = -2;
+  function doCaptions(t) {
+    let ci = -1;
+    for (let i = 0; i < CHUNKS.length; i++) if (t >= CHUNKS[i].t0 && t < CHUNKS[i].t1) { ci = i; break; }
+    if (ci !== lastChunk) { if (ci >= 0) drawCaptionText(capCard, CHUNKS[ci].text); lastChunk = ci; }
+    capCard.mesh.material.opacity = ci >= 0
+      ? Math.min(ramp(t, CHUNKS[ci].t0, CHUNKS[ci].t0 + 0.08), 1 - ramp(t, CHUNKS[ci].t1 - 0.07, CHUNKS[ci].t1)) : 0;
+    const f = t * FPS;
+    endCard.mesh.material.opacity = f > TOTAL - 78 ? ramp(f, TOTAL - 78, TOTAL - 52) : 0;
+  }
+
+  /* ---------- deterministic walk tracks (pure functions of t — chunk-seam safe) ---------- */
+  function trackD(keys, t) {
+    // keys [{t,x,z}] straight segments with sstep easing; returns pos + cumulative distance + heading
+    if (t <= keys[0].t) return { x: keys[0].x, z: keys[0].z, dist: 0, heading: Math.atan2(keys[1].x - keys[0].x, keys[1].z - keys[0].z), speed: 0 };
+    let dist = 0;
+    for (let i = 0; i < keys.length - 1; i++) {
+      const a = keys[i], b = keys[i + 1], segLen = Math.hypot(b.x - a.x, b.z - a.z);
+      if (t <= b.t) {
+        const u = sstep((t - a.t) / (b.t - a.t));
+        const du = (6 * ((t - a.t) / (b.t - a.t)) * (1 - (t - a.t) / (b.t - a.t))) / (b.t - a.t);
+        return { x: lerp(a.x, b.x, u), z: lerp(a.z, b.z, u), dist: dist + segLen * u, heading: Math.atan2(b.x - a.x, b.z - a.z), speed: segLen * du };
+      }
+      dist += segLen;
+    }
+    const L = keys[keys.length - 1], P0 = keys[keys.length - 2];
+    return { x: L.x, z: L.z, dist, heading: Math.atan2(L.x - P0.x, L.z - P0.z), speed: 0 };
+  }
+  function walkHuman(ch, tr, t) {
+    ch.group.position.set(tr.x, 0, tr.z);
+    ch.group.rotation.set(0, tr.heading, 0); // full reset — a lying pose (rescue) must never leak into a march
+    const amp = THREE.MathUtils.clamp(tr.speed / 0.8, 0, 1);
+    if (amp > 0.04) poseWalkGT(ch, (tr.dist / cycleFor(ch)) * Math.PI * 2, { thigh: 0.40 * amp + 0.05, arm: 0.28 * amp, bob: amp });
+    else poseRestGT(ch, t);
+    return amp;
+  }
+  function walkDog(tr, t, gaitScale = 1) {
+    dog.position.set(tr.x, 0, tr.z);
+    dog.rotation.y = tr.heading;
+    if (tr.speed > 0.05) poseDog(dog, 'walk', t, (tr.dist / (0.36 * gaitScale)) * Math.PI * 2);
+    else poseDog(dog, 'stand', t);
+  }
+  function show(...names) { for (const n of NAMES) chars[n].group.visible = names.includes(n); }
+  function camKeys(f, a, b, keys) {
+    const u = THREE.MathUtils.clamp((f - a) / (b - a), 0, 1);
+    let A = keys[0], B = keys[keys.length - 1];
+    for (let i = 0; i < keys.length - 1; i++) if (u >= keys[i].u && u <= keys[i + 1].u) { A = keys[i]; B = keys[i + 1]; break; }
+    const k = sstep((u - A.u) / Math.max(1e-5, B.u - A.u));
+    camera.position.set(lerp(A.p[0], B.p[0], k), lerp(A.p[1], B.p[1], k), lerp(A.p[2], B.p[2], k));
+    const lk = [lerp(A.l[0], B.l[0], k), lerp(A.l[1], B.l[1], k), lerp(A.l[2], B.l[2], k)];
+    camera.lookAt(...lk);
+    fill.position.copy(camera.position); fill.target.position.set(...lk);
+    return lk;
+  }
+  const inSec = (f, sn) => f >= SEC[sn][0] && f < SEC[sn][1];
+  const secU = (f, sn) => (f - SEC[sn][0]) / (SEC[sn][1] - SEC[sn][0]);
+  const SETS = { campG, shipG, trenchG, nomansG, paradeG, museumG };
+  function showSet(name) { for (const k in SETS) SETS[k].visible = (k === name); sea.visible = (name === 'shipG'); road.visible = (name === 'paradeG'); mfloor.visible = (name === 'museumG'); }
+
+  window.renderFrame = (f) => {
+    const t = f / FPS;
+    lightWant.finale = 0; lightWant.water = 0;
+    spyMap.visible = false;
+    medalBoard.visible = false;
+    dog.visible = true;
+    flag.userData.flag.rotation.y = Math.sin(t * 2.1) * 0.18;
+    flag2.userData.flag.rotation.y = Math.sin(t * 2.3 + 1) * 0.18;
+
+    if (inSec(f, 'hook')) {
+      showSet('campG'); applyPal('golden', 0, 0);
+      show('aadmi');
+      // HOOK frame 1: Stubby trots TOWARD the camera, face first, Conroy following.
+      const dtr = trackD([{ t: 0, x: 0, z: -0.8 }, { t: 2.4, x: 0, z: 0.9 }, { t: 4.27, x: 0, z: 0.9 }], t);
+      if (t < 2.4) walkDog(dtr, t); else { dog.position.set(0, 0, 0.9); dog.rotation.y = 0; poseDog(dog, f < 84 ? 'stand' : 'sit', t); }
+      const C = chars.aadmi;
+      const ctr = trackD([{ t: 0, x: -1.3, z: -2.2 }, { t: 3.2, x: -1.1, z: -0.5 }, { t: 4.27, x: -1.1, z: -0.5 }], t);
+      walkHuman(C, ctr, t);
+      camKeys(f, 0, 128, [
+        { u: 0, p: [0.3, 0.9, 4.6], l: [0, 0.5, 0.3] },
+        { u: 1, p: [0.15, 0.8, 3.9], l: [0, 0.5, 0.7] }]);
+    }
+    else if (inSec(f, 'camp')) {
+      showSet('campG'); applyPal('day', 0, 0);
+      show('aadmi', 'sipahi');
+      // dog trots into camp beside Conroy; soldiers watch; dog slips into the tent
+      const dtr = trackD([{ t: 4.27, x: -7.5, z: 4.6 }, { t: 8.2, x: -1.2, z: 1.2 }, { t: 9.6, x: -2.9, z: -1.6 }, { t: 10.58, x: -3.3, z: -2.3 }], t);
+      walkDog(dtr, t);
+      const C = chars.aadmi;
+      const ctr = trackD([{ t: 4.27, x: -8.3, z: 5.4 }, { t: 8.2, x: -2.0, z: 2.0 }, { t: 9.2, x: -2.2, z: 0.6 }, { t: 10.58, x: -2.2, z: 0.6 }], t);
+      const campAmp = walkHuman(C, ctr, t);
+      if (campAmp <= 0.04 && t > 9.2) { poseLean(C, t, 0.55, 1); }  // Conroy bends, settling him in
+      const S = chars.sipahi;
+      S.group.position.set(2.6, 0, 0.8); S.group.rotation.y = -1.9; poseRestGT(S, t + 1.2); poseLookAround(S, t, 0.3);
+      camera.position.set(dtr.x + 2.6, 1.5, dtr.z + 4.6); camera.lookAt(dtr.x, 0.45, dtr.z);
+      fill.position.copy(camera.position); fill.target.position.set(dtr.x, 0.45, dtr.z);
+    }
+    else if (inSec(f, 'ship')) {
+      showSet('shipG'); applyPal('dayCool', 60, 0); lightWant.water = 12;
+      show('aadmi');
+      // hidden in the coat: Conroy crosses the deck with a suspicious bulge, dog trots free at the end
+      const C = chars.aadmi;
+      const ctr = trackD([{ t: 10.58, x: 55.5, z: 0.6 }, { t: 13.6, x: 61.5, z: 0.2 }, { t: 14.5, x: 61.5, z: 0.2 }], t);
+      ctr.z += 0; // deck-local handled by world coords (ship at x=60, deck top y=0.25)
+      C.group.position.set(ctr.x, 0.25, ctr.z); C.group.rotation.set(0, ctr.heading, 0);
+      const campAmp2 = THREE.MathUtils.clamp(ctr.speed / 0.8, 0, 1);
+      if (campAmp2 > 0.04) poseWalkGT(C, (ctr.dist / cycleFor(C)) * Math.PI * 2, { thigh: 0.34, arm: 0.06, bob: campAmp2 });
+      else poseRestGT(C, t);
+      if (t < 13.4) { // dog hidden inside the coat — not visible at all
+        dog.visible = false;
+      } else {
+        dog.visible = true;
+        const dtr = trackD([{ t: 13.4, x: 61.2, z: 0.9 }, { t: 14.5, x: 62.6, z: 1.3 }], t);
+        dtr.x = dtr.x; // world
+        dog.position.set(dtr.x, 0.25, dtr.z); dog.rotation.y = dtr.heading;
+        poseDog(dog, 'walk', t, (Math.max(0, t - 13.4) * 0.9 / 0.36) * Math.PI * 2);
+      }
+      camKeys(f, 317, 435, [
+        { u: 0, p: [54.6, 1.5, -2.4], l: [59.0, 0.8, 0.4] },
+        { u: 0.7, p: [58.8, 1.35, -2.2], l: [61.8, 0.7, 0.5] },
+        { u: 1, p: [60.6, 1.15, -1.6], l: [62.5, 0.45, 1.2] }]);
+    }
+    else if (inSec(f, 'salute')) {
+      showSet('campG'); applyPal('day', 0, 0);
+      show('raja', 'sipahi');
+      // the officer inspects; Stubby sits and SALUTES as he stops before him
+      const R = chars.raja;
+      const rtr = trackD([{ t: 14.5, x: 3.9, z: 3.1 }, { t: 16.6, x: 1.35, z: 1.55 }, { t: 19.65, x: 1.35, z: 1.55 }], t);
+      walkHuman(R, rtr, t);
+      if (t > 16.6) R.group.rotation.y = Math.atan2(0 - 1.35, 0.9 - 1.55); // stopped: face the dog
+      const S = chars.sipahi;
+      S.group.position.set(-1.9, 0, 2.4); S.group.rotation.y = 2.6; poseRestGT(S, t + 0.7);
+      dog.position.set(0, 0, 0.9); dog.rotation.y = Math.atan2(R.group.position.x - 0, R.group.position.z - 0.9);
+      poseDog(dog, t < 16.4 ? 'sit' : 'salute', t);
+      camKeys(f, 435, 554, [
+        { u: 0, p: [2.4, 1.3, 5.0], l: [0.3, 0.55, 1.0] },
+        { u: 1, p: [1.5, 1.05, 4.1], l: [0.35, 0.55, 1.0] }]);
+    }
+    else if (inSec(f, 'gas')) {
+      showSet('trenchG'); applyPal('dayCool', 0, 60);
+      show('aadmi', 'sipahi');
+      // inside the trench: Stubby smells it first — alert, then barking the camp awake
+      dog.position.set(0.8, 0.06, 60); dog.rotation.y = 2.2; // faces down-trench toward camera — bark reads
+      poseDog(dog, t < SEC.gas[0] / FPS + 1.1 ? 'alert' : 'bark', t);
+      const A = chars.aadmi, S = chars.sipahi;
+      const alarm = ramp(f, SEC.gas[0] + 34, SEC.gas[0] + 58);
+      A.group.position.set(-1.8, 0.06, 60.7); A.group.rotation.y = 1.2;
+      poseRestGT(A, t); if (alarm > 0.02) poseStartle(A, alarm);
+      S.group.position.set(-3.4, 0.06, 59.5); S.group.rotation.y = 2.4;
+      poseRestGT(S, t + 1.5); if (alarm > 0.02) { poseStartle(S, alarm); poseHeadShake(S, t, alarm * 0.6); }
+      // camera looks ALONG the trench channel — dog centre, men flanking down the line
+      camKeys(f, 554, 718, [
+        { u: 0, p: [4.8, 1.3, 61.2], l: [0.4, 0.45, 60.1] },
+        { u: 1, p: [3.9, 1.1, 61.0], l: [0.7, 0.45, 60.0] }]);
+    }
+    else if (inSec(f, 'rescue')) {
+      showSet('nomansG'); applyPal('night', 60, 60); lightWant.finale = 6;
+      finaleLight.position.set(63, 3.4, 55);
+      show('sipahi', 'aadmi');
+      // night: Stubby picks through the craters, finds the wounded man, stays and calls
+      const dtr = trackD([{ t: 23.94, x: 53.5, z: 63.5 }, { t: 26.4, x: 58.6, z: 60.8 }, { t: 27.86, x: 58.6, z: 60.8 }], t);
+      if (t < 26.4) walkDog(dtr, t);
+      else { dog.position.set(58.6, 0, 60.8); dog.rotation.y = 2.4; poseDog(dog, f > 800 ? 'bark' : 'alert', t); }
+      const Wd = chars.sipahi; // wounded, lying by a crater
+      Wd.group.position.set(59.6, 0.16, 59.7); Wd.group.rotation.set(-Math.PI / 2, 0, 0.7);
+      poseRestGT(Wd, t * 0.5);
+      const Mdc = chars.aadmi; // medic arrives at the very end of the beat
+      const mtr = trackD([{ t: 26.6, x: 64.5, z: 64.5 }, { t: 27.86, x: 61.8, z: 62.2 }], t);
+      if (t > 26.6) { Mdc.group.visible = true; walkHuman(Mdc, mtr, t); } else Mdc.group.visible = false;
+      camKeys(f, 718, 836, [
+        { u: 0, p: [54.8, 1.5, 66.8], l: [58.0, 0.4, 61.0] },
+        { u: 1, p: [56.2, 1.05, 64.3], l: [59.2, 0.3, 60.0] }]);
+    }
+    else if (inSec(f, 'spy')) {
+      showSet('trenchG'); applyPal('dayCool', 0, 60);
+      show('budha', 'aadmi');
+      // the spy sketches the trenches, facing them (and the camera); Stubby creeps
+      // up from the wire side and GRABS the seat of his pants from behind
+      const B = chars.budha;
+      B.group.position.set(3.2, 0, 56.3); B.group.rotation.y = 0.75;
+      poseRestGT(B, t); poseLean(B, t, 0.4, -1);
+      spyMap.visible = true;
+      spyMap.position.set(3.42, 0.9, 56.54); spyMap.rotation.set(-0.85, 0.75, 0.1); spyMap.scale.setScalar(0.9);
+      const grabT = SEC.spy[0] / FPS + 2.9;
+      const dtr = trackD([{ t: 27.86, x: -1.5, z: 57.6 }, { t: 30.7, x: 2.45, z: 55.75 }, { t: 33.17, x: 2.45, z: 55.75 }], t);
+      if (t < grabT) walkDog(dtr, t);
+      else { dog.position.set(2.45, 0, 55.75); dog.rotation.y = Math.atan2(3.2 - 2.45, 56.3 - 55.75); poseDog(dog, 'grab', t); }
+      if (t > grabT) { poseStartle(B, Math.min(1, (t - grabT) * 3)); B.group.position.z = 56.3 + Math.sin(Math.min(1, (t - grabT) * 2) * Math.PI) * 0.05; }
+      const A = chars.aadmi; // help arrives
+      const atr = trackD([{ t: 31.4, x: -4.5, z: 59.5 }, { t: 33.17, x: 0.6, z: 57.9 }], t);
+      if (t > 31.4) { A.group.visible = true; walkHuman(A, atr, t); } else A.group.visible = false;
+      camKeys(f, 836, 995, [
+        { u: 0, p: [0.2, 1.7, 60.8], l: [2.6, 0.6, 56.2] },
+        { u: 1, p: [1.2, 1.15, 59.3], l: [2.9, 0.55, 56.0] }]);
+    }
+    else if (inSec(f, 'sergeant')) {
+      showSet('trenchG'); applyPal('golden', 0, 60);
+      medalBoard.visible = true;
+      show('raja', 'aadmi');
+      const u = secU(f, 'sergeant');
+      const R = chars.raja, C = chars.aadmi;
+      if (u < 0.36) {
+        // promotion: officer presents the stripes board, Stubby sits tall
+        R.group.position.set(-2.2, 0.06, 60.9); R.group.rotation.y = 2.5; poseRestGT(R, t);
+        C.group.position.set(1.9, 0.06, 59.2); C.group.rotation.y = -2.4; poseRestGT(C, t + 1.1);
+        dog.position.set(-0.6, 0.06, 60.1); dog.rotation.y = Math.atan2(-2.2 + 0.6, 60.9 - 60.1);
+        poseDog(dog, 'sit', t);
+        camKeys(f, 995, 1077, [
+          { u: 0, p: [3.6, 1.25, 61.1], l: [-1.4, 0.6, 60.2] },
+          { u: 1, p: [2.8, 1.05, 60.9], l: [-1.2, 0.55, 60.2] }]);
+      } else if (u < 0.66) {
+        // the grenade: flash, shake — then Stubby down, wounded
+        const boomF = 995 + (1222 - 995) * 0.36;
+        R.group.position.set(-2.6, 0.06, 61.4); R.group.rotation.y = 2.2; poseRestGT(R, t); poseStartle(R, ramp(f, boomF, boomF + 6) * (1 - ramp(f, boomF + 20, boomF + 40)));
+        C.group.position.set(1.6, 0.06, 58.9); C.group.rotation.y = -2.0; poseRestGT(C, t);
+        dog.position.set(-0.4, 0.06, 60.2); dog.rotation.y = 1.1;
+        poseDog(dog, f < boomF + 8 ? 'alert' : 'lie', t);
+        const lk = camKeys(f, 1077, 1149, [
+          { u: 0, p: [2.6, 1.2, 61.1], l: [-0.5, 0.4, 60.2] },
+          { u: 1, p: [2.0, 1.0, 60.95], l: [-0.4, 0.3, 60.2] }]);
+        if (f >= boomF && f < boomF + 7) {
+          const sh = Math.sin(f * 7.1) * 0.05 * (1 - (f - boomF) / 7);
+          camera.position.y += sh; camera.position.x += sh * 0.6; camera.lookAt(...lk);
+          lightWant.sunI = 3.2; // flash
+        }
+      } else {
+        // healed: he walks back to the line beside Conroy
+        const dtr = trackD([{ t: 37.9, x: -3.6, z: 60.1 }, { t: 40.72, x: 1.8, z: 60.0 }], t);
+        walkDog(dtr, t);
+        const ctr = trackD([{ t: 37.9, x: -4.3, z: 61.1 }, { t: 40.72, x: 1.1, z: 61.0 }], t);
+        walkHuman(C, ctr, t);
+        R.group.visible = false;
+        camera.position.set(dtr.x + 1.8, 1.35, dtr.z + 3.9); camera.lookAt(dtr.x, 0.5, dtr.z);
+        fill.position.copy(camera.position); fill.target.position.set(dtr.x, 0.5, dtr.z);
+      }
+    }
+    else if (inSec(f, 'parade')) {
+      showSet('paradeG'); applyPal('day', -60, 0);
+      show('aadmi', 'sipahi', 'raja');
+      // Stubby leads the parade, soldiers marching with him, officer saluting from the kerb
+      const dtr = trackD([{ t: 40.72, x: -70, z: 0 }, { t: 44.85, x: -52, z: 0 }], t);
+      walkDog(dtr, t);
+      const C = chars.aadmi;
+      const ctr = trackD([{ t: 40.72, x: -71.2, z: -1.15 }, { t: 44.85, x: -53.2, z: -1.15 }], t);
+      walkHuman(C, ctr, t);
+      const S = chars.sipahi;
+      const str = trackD([{ t: 40.72, x: -71.2, z: 1.15 }, { t: 44.85, x: -53.2, z: 1.15 }], t);
+      walkHuman(S, str, t + 0.5);
+      const R = chars.raja;
+      R.group.position.set(-56, 0, 3.1); R.group.rotation.y = Math.PI + 0.3; poseRestGT(R, t);
+      camera.position.set(dtr.x + 3.4, 1.5, dtr.z + 4.8); camera.lookAt(dtr.x + 0.6, 0.5, dtr.z);
+      fill.position.copy(camera.position); fill.target.position.set(dtr.x + 0.6, 0.5, dtr.z);
+    }
+    else { // museum — the ending grows out of the parade: same dog, now on the pedestal
+      showSet('museumG'); applyPal('dark', -60, 60); lightWant.finale = 85;
+      finaleLight.position.set(-58.5, 4.4, 64.5);
+      show();
+      dog.position.set(-60, 1.37, 60); dog.rotation.y = 0.5;
+      poseDog(dog, f < TOTAL - 78 ? 'stand' : 'sit', t);
+      camKeys(f, 1345, 1509, [
+        { u: 0, p: [-55.8, 2.2, 66.5], l: [-60, 1.6, 60] },
+        { u: 1, p: [-58.2, 1.75, 63.4], l: [-60, 1.55, 60] }]);
+    }
+
+    doCaptions(t);
+    easeLights();
+    renderer.render(scene, camera);
+  };
+  window.__scene = scene; window.__cam = camera; window.__renderer = renderer; window.__THREE = THREE;
+  window.__scaleLog = window.__scaleLog || {};
+  window.ready = true;
+} catch (e) { console.log('ERR ' + e.message + ' ' + e.stack); window.err = e.message; }
+</script></body></html>
