@@ -1,0 +1,48 @@
+name: Blender Train Stop Finish Only
+
+on:
+  workflow_dispatch:
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download frames from render run 43371096445
+        uses: actions/download-artifact@v4
+        with:
+          run-id: 43371096445
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: all_frames
+          merge-multiple: true
+      - name: Assemble MP4 with voice
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          ls all_frames | head -3
+          ls all_frames | wc -l
+          cat projects/train-stop/audio.b64.part00 | base64 -d > mix.ogg
+          mkdir -p seq
+          python3 - <<'EOF'
+          import os, shutil
+          src = 'all_frames'
+          files = sorted(f for f in os.listdir(src) if f.endswith('.png'))
+          print('frames found:', len(files))
+          assert len(files) == 1428, len(files)
+          for i, f in enumerate(files, 1):
+              shutil.copy(os.path.join(src, f), 'seq/img_%04d.png' % i)
+          EOF
+          ffmpeg -y -framerate 30 -i seq/img_%04d.png -i mix.ogg -c:v libx264 -pix_fmt yuv420p -r 30 -c:a aac -b:a 160k -shortest Train-Stop-Voice.mp4
+          ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate,codec_type -of default=noprint_wrappers=1 Train-Stop-Voice.mp4
+          for t in 3 15 27 44; do ffmpeg -y -loglevel error -ss $t -i Train-Stop-Voice.mp4 -frames:v 1 qa_$t.jpg; done
+          ffmpeg -y -loglevel error -i qa_3.jpg -i qa_15.jpg -i qa_27.jpg -i qa_44.jpg -filter_complex "[0:v]scale=270:480[a];[1:v]scale=270:480[b];[2:v]scale=270:480[c];[3:v]scale=270:480[d];[a][b][c][d]hstack=4" qa_sheet.jpg
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: blender-train-stop-1
+          name: Train Stop Render 1
+          files: |
+            Train-Stop-Voice.mp4
+            qa_sheet.jpg
