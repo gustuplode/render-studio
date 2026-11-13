@@ -1,0 +1,81 @@
+name: Blender Train Stop Render
+
+on:
+  push:
+    paths:
+      - 'projects/train-stop/trigger.json'
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        offset: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Blender 4.2.9
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxkbcommon0 libx11-6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libegl1 libsm6 libxi6 xz-utils > /dev/null
+          curl -sL https://download.blender.org/release/Blender4.2/blender-4.2.9-linux-x64.tar.xz -o /tmp/blender.tar.xz
+          mkdir -p /opt/blender && tar -xJf /tmp/blender.tar.xz -C /opt/blender --strip-components=1
+          /opt/blender/blender --version
+      - name: Unpack blend
+        run: |
+          cd projects/train-stop
+          cat blend.b64.part* | base64 -d > scene.blend.xz
+          xz -d scene.blend.xz
+          ls -la scene.blend
+      - name: Render strided frames
+        run: |
+          /opt/blender/blender -b projects/train-stop/scene.blend -noaudio --python projects/train-stop/render_frames.py -- ${{ matrix.offset }} 24 frames_out
+          ls frames_out | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.offset }}
+          path: frames_out/*.png
+          retention-days: 2
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: all_frames
+          merge-multiple: true
+      - name: Assemble MP4 with voice
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          cd projects/train-stop
+          cat audio.b64.part* | base64 -d > mix.ogg
+          ls all_frames 2>/dev/null || ls ../all_frames
+          mkdir -p seq
+          # frames arrive as f_0001.png ... f_1428.png in ../all_frames
+          python3 - <<'EOF'
+          import os, shutil
+          src = '../all_frames'
+          files = sorted(f for f in os.listdir(src) if f.endswith('.png'))
+          print('frames found:', len(files))
+          assert len(files) == 1428, len(files)
+          for i, f in enumerate(files, 1):
+              shutil.copy(os.path.join(src, f), 'seq/img_%04d.png' % i)
+          EOF
+          ffmpeg -y -framerate 30 -i seq/img_%04d.png -i mix.ogg -c:v libx264 -pix_fmt yuv420p -r 30 -c:a aac -b:a 160k -shortest Train-Stop-Voice.mp4
+          ffprobe -v error -show_entries format=duration -show_entries stream=width,height,r_frame_rate,codec_type -of default=noprint_wrappers=1 Train-Stop-Voice.mp4
+          # QA sheet: 4 frames
+          for t in 3 15 27 44; do ffmpeg -y -loglevel error -ss $t -i Train-Stop-Voice.mp4 -frames:v 1 qa_$t.jpg; done
+          ffmpeg -y -loglevel error -i qa_3.jpg -i qa_15.jpg -i qa_27.jpg -i qa_44.jpg -filter_complex "[0:v]scale=270:480[a];[1:v]scale=270:480[b];[2:v]scale=270:480[c];[3:v]scale=270:480[d];[a][b][c][d]hstack=4" qa_sheet.jpg
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: blender-train-stop-1
+          name: Train Stop Render 1
+          files: |
+            projects/train-stop/Train-Stop-Voice.mp4
+            projects/train-stop/qa_sheet.jpg
