@@ -1,0 +1,18 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#000}canvas{display:block}
+@font-face{font-family:'Noto Sans Devanagari';src:url('fonts/NotoSansDevanagari-Bold.woff2') format('woff2');font-weight:100 1000}
+</style>
+<script type="importmap">{ "imports": { "three": "./lib/three.module.js" } }</script></head>
+<body><canvas id="c" width="1080" height="1920"></canvas>
+<script>window.addEventListener('error',e=>{window.err=String(e.message);console.log('ERR '+e.message)});</script>
+<script type="module">
+try {
+  await Promise.race([
+    Promise.all([
+      document.fonts.load('900 80px "Noto Sans Devanagari"', 'किशीस्टेशनमास्टरग्रेफ्रायर्सबॉबीगैंडरएलेक्ससीबिस्कुटचैंपियन'),
+      document.fonts.load('700 60px "Noto Sans Devanagari"', 'जॉनग्रे')
+    ]),
+    new Promise(r => setTimeout(r, 8000))
+  ]);
+} catch (e) { console.log('font preload skipped: ' + e.message); }
+try { await import('./main.js'); } catch (e) { window.err = String(e.message); console.log('ERR ' + e.message); }
+</script></body></html>
