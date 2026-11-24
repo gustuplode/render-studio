@@ -26,7 +26,9 @@ name: crashv2-render
 # digits with `tr -cd '0-9'` before comparison (the old inkbeat bug —
 # missing ffprobe + a trailing comma in the count — must not recur).
 # Every render/grade/encode/concat command shape in this file was proven
-# locally from the extracted bundle before staging (see STAGE_REPORT.md).
+# locally from the extracted bundle before staging (see STAGE_REPORT.md);
+# the encode step was revised after run #1 failed (see FIX_REPORT.md) and
+# the revised shape was proven locally the same way.
 # Upload order matters: commit THIS file first, DISABLE the workflow,
 # upload the bundle parts, ENABLE the workflow, then re-upload the LAST
 # part (crashv2-bundle.part-4) to trigger exactly one run with all parts
@@ -141,14 +143,45 @@ jobs:
         run: |
           for f in crashv2/remotion/chunk-${{ matrix.idx }}/element-*.png; do python3 crashv2/grade_crash.py "$f" "$f"; done
           echo "graded: $(ls crashv2/remotion/chunk-${{ matrix.idx }}/*.png | wc -l | tr -cd '0-9') frames"
-      # Encode the graded frames into this chunk's silent segment. The
-      # element-*.png names carry ABSOLUTE frame numbers, so image2 needs
-      # -start_number = the chunk's first frame. Encode parameters are
+      # Encode the graded frames into this chunk's silent segment.
+      # RUN #1 FAILURE (chunk 0 only, 2026-11-25): this step failed with
+      # ffmpeg exit 254 = AVERROR(ENOENT) — image2's find_image_range
+      # found NO file in the start range 0-4, i.e. the first frames were
+      # unreadable at encode time even though the pre-grade count had
+      # passed. The named suspect (-start_number 0) was DISPROVEN locally:
+      # the exact old command encodes 5/5 and 125/125 frames with
+      # ffmpeg 6.1.3, 7.1.5 and 8.1.2, and ffmpeg 6.1.1's img2dec.c is
+      # identical to 6.1.3 for all start_number logic (default IS 0).
+      # The remaining cause is therefore a runner-side loss of the first
+      # frames between the count check and the encode (not reproducible
+      # from the bundle). This step is hardened against BOTH possibilities:
+      # (1) -start_number is gone entirely — frames are renumbered to a
+      # 1-based zero-padded sequence (symlinks, numeric order via ls -v)
+      # and encoded from %04d.png, so there is no chunk-0-specific input
+      # difference at all (and no -pattern_type glob — lexical sort would
+      # scramble element-9 vs element-100); (2) a post-grade guard
+      # re-counts the frames and checks the first frame is present BEFORE
+      # ffmpeg runs, so a repeat fails loudly here with a clear message
+      # instead of ffmpeg's cryptic ENOENT. Encode parameters are
       # IDENTICAL for every chunk (see header) so finalize can concat with
-      # stream copy. No audio in segments.
+      # stream copy. No audio in segments. Proven locally: the fixed
+      # command's chunk-0 5-frame segment, chunk-6 15-frame segment and
+      # 125-frame segment are byte-identical to the segments the old
+      # command produced (see FIX_REPORT.md).
       - name: Encode chunk segment (silent MP4)
         run: |
-          ffmpeg -y -v error -framerate 30 -start_number ${{ matrix.start }} -i crashv2/remotion/chunk-${{ matrix.idx }}/element-%d.png -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -profile:v high -level:v 4.2 -r 30 -g 250 -keyint_min 250 -sc_threshold 0 -video_track_timescale 30000 crashv2/remotion/chunk-${{ matrix.idx }}.mp4
+          n=$(ls crashv2/remotion/chunk-${{ matrix.idx }}/element-*.png | wc -l | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} post-grade png_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+          test -s "crashv2/remotion/chunk-${{ matrix.idx }}/element-${{ matrix.start }}.png" || { echo "ERROR: first frame element-${{ matrix.start }}.png missing/unreadable after grade (run #1 failure mode)"; exit 1; }
+          rm -rf crashv2/remotion/chunk-${{ matrix.idx }}-seq
+          mkdir -p crashv2/remotion/chunk-${{ matrix.idx }}-seq
+          i=1
+          for f in $(ls -v crashv2/remotion/chunk-${{ matrix.idx }}/element-*.png); do
+            ln -s "$PWD/$f" "crashv2/remotion/chunk-${{ matrix.idx }}-seq/$(printf '%04d.png' "$i")"
+            i=$((i + 1))
+          done
+          ffmpeg -y -v error -framerate 30 -i crashv2/remotion/chunk-${{ matrix.idx }}-seq/%04d.png -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -profile:v high -level:v 4.2 -r 30 -g 250 -keyint_min 250 -sc_threshold 0 -video_track_timescale 30000 crashv2/remotion/chunk-${{ matrix.idx }}.mp4
           ls -la crashv2/remotion/chunk-${{ matrix.idx }}.mp4
       # Segment frame-count verify via ffprobe, digits-only via tr.
       - name: Verify segment frame count
