@@ -1,0 +1,210 @@
+name: crashv2-render
+# CrashV2 — "He Crashed His Car on Purpose" FULL animated film (Remotion
+# composition CrashV2, 1500f @30fps, 1080x1920). Abid rejected the
+# storyboard animatic (2026-11-24) and ordered the real moving film; this
+# workflow renders it on GitHub Actions in parallel chunks.
+# Modelled on the PROVEN crashv4-render workflow design (per-chunk finish),
+# with ONE deliberate difference: the release asset is the SILENT joined
+# MP4. The locked N1 voice stem (video-crash/vo/master.wav) is muxed
+# LOCALLY after download — no audio is in this bundle or this workflow.
+# DESIGN: each CHUNK job finishes its own segment end to end (render PNGs
+# -> verify count -> grade its own frames with grade_crash.py k=2.6 ->
+# encode a silent segment MP4 -> verify segment frame count) and uploads
+# ONLY that segment (~10-40 MB). Raw PNG artifacts (~4 GB) are never
+# uploaded. FINALIZE concatenates the 12 segments with STREAM COPY (no
+# re-encode — every segment uses byte-identical encode parameters, fixed
+# below), asserts 1500 frames / ~50.0s / 1080x1920, and publishes the
+# release `crashv2-<run number>` with the silent MP4.
+# Segment encode parameters (IDENTICAL in every chunk — do not vary):
+#   libx264 preset slow crf 17, yuv420p, profile high, level 4.2, 30 fps,
+#   keyint -g 250 -keyint_min 250 -sc_threshold 0 (a 125-frame segment gets
+#   exactly one keyframe, at its head — clean concat joins),
+#   -video_track_timescale 30000 (each frame = exactly 1000 ticks, so the
+#   stream-copy concat sums to exactly 50.000s).
+# Frame-count verification is done the FIXED way everywhere: ffprobe is
+# installed (apt ffmpeg) BEFORE any ffprobe step, counts are stripped to
+# digits with `tr -cd '0-9'` before comparison (the old inkbeat bug —
+# missing ffprobe + a trailing comma in the count — must not recur).
+# Every render/grade/encode/concat command shape in this file was proven
+# locally from the extracted bundle before staging (see STAGE_REPORT.md).
+# Upload order matters: commit THIS file first, DISABLE the workflow,
+# upload the bundle parts, ENABLE the workflow, then re-upload the LAST
+# part (crashv2-bundle.part-4) to trigger exactly one run with all parts
+# present (see STAGE_REPORT.md).
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "crashv2-bundle.part-*"
+permissions:
+  contents: write
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat crashv2-bundle.part-* > crashv2-bundle.tar.gz
+          tar xzf crashv2-bundle.tar.gz
+          ls crashv2/ crashv2/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: crashv2/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: crashv2/remotion
+        run: |
+          npx -y playwright@1.49.1 install --with-deps chromium
+          ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome
+      - name: Smoke stills (WebGL proof, 3 frames)
+        working-directory: crashv2/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          echo "CHROME=$CHROME"
+          for f in 10 750 1490; do
+            npx remotion still src/index.ts CrashV2 smoke-f$f.png --frame=$f --scale=0.5 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          done
+          ls -la smoke-f*.png
+          for f in 10 750 1490; do test -s smoke-f$f.png; done
+          echo "SMOKE OK: WebGL context works, 3 distinct stills written"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-stills
+          path: crashv2/remotion/smoke-f*.png
+  chunk:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { idx: 0, frames: "0-124", start: 0, expect: "125" }
+          - { idx: 1, frames: "125-249", start: 125, expect: "125" }
+          - { idx: 2, frames: "250-374", start: 250, expect: "125" }
+          - { idx: 3, frames: "375-499", start: 375, expect: "125" }
+          - { idx: 4, frames: "500-624", start: 500, expect: "125" }
+          - { idx: 5, frames: "625-749", start: 625, expect: "125" }
+          - { idx: 6, frames: "750-874", start: 750, expect: "125" }
+          - { idx: 7, frames: "875-999", start: 875, expect: "125" }
+          - { idx: 8, frames: "1000-1124", start: 1000, expect: "125" }
+          - { idx: 9, frames: "1125-1249", start: 1125, expect: "125" }
+          - { idx: 10, frames: "1250-1374", start: 1250, expect: "125" }
+          - { idx: 11, frames: "1375-1499", start: 1375, expect: "125" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat crashv2-bundle.part-* > crashv2-bundle.tar.gz
+          tar xzf crashv2-bundle.tar.gz
+          ls crashv2/ crashv2/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: crashv2/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: crashv2/remotion
+        run: npx -y playwright@1.49.1 install --with-deps chromium
+      # Image-sequence render: writes element-<absolute frame>.png per frame
+      # into the output directory (shape + naming proven locally).
+      - name: Render chunk (PNG frame sequence)
+        working-directory: crashv2/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          npx remotion render src/index.ts CrashV2 chunk-${{ matrix.idx }} --sequence --frames=${{ matrix.frames }} --image-format=png --gl=angle --timeout=600000 --concurrency=2 --browser-executable=$CHROME
+      # Frame-count verify: count PNG files, digits-only via tr. No ffprobe
+      # needed here.
+      - name: Verify chunk frame count
+        working-directory: crashv2/remotion
+        run: |
+          n=$(ls chunk-${{ matrix.idx }}/*.png | wc -l | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} png_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+      # ffmpeg for the segment encode + ffprobe verify; python3-pil +
+      # python3-numpy via apt for grade_crash.py (avoids the PEP 668 pip
+      # block on Ubuntu 24.04; apt is the inkbeat-proven install route).
+      # This step runs BEFORE any ffprobe use — ffprobe is never assumed.
+      - name: Install ffmpeg + python imaging stack
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg python3-pil python3-numpy
+          ffmpeg -version | head -1
+          python3 -c "from PIL import Image; import numpy; print('PIL+numpy OK')"
+      # Grade this chunk's own frames in place (project grade, k=2.6).
+      - name: Grade chunk frames
+        run: |
+          for f in crashv2/remotion/chunk-${{ matrix.idx }}/element-*.png; do python3 crashv2/grade_crash.py "$f" "$f"; done
+          echo "graded: $(ls crashv2/remotion/chunk-${{ matrix.idx }}/*.png | wc -l | tr -cd '0-9') frames"
+      # Encode the graded frames into this chunk's silent segment. The
+      # element-*.png names carry ABSOLUTE frame numbers, so image2 needs
+      # -start_number = the chunk's first frame. Encode parameters are
+      # IDENTICAL for every chunk (see header) so finalize can concat with
+      # stream copy. No audio in segments.
+      - name: Encode chunk segment (silent MP4)
+        run: |
+          ffmpeg -y -v error -framerate 30 -start_number ${{ matrix.start }} -i crashv2/remotion/chunk-${{ matrix.idx }}/element-%d.png -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -profile:v high -level:v 4.2 -r 30 -g 250 -keyint_min 250 -sc_threshold 0 -video_track_timescale 30000 crashv2/remotion/chunk-${{ matrix.idx }}.mp4
+          ls -la crashv2/remotion/chunk-${{ matrix.idx }}.mp4
+      # Segment frame-count verify via ffprobe, digits-only via tr.
+      - name: Verify segment frame count
+        run: |
+          n=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 crashv2/remotion/chunk-${{ matrix.idx }}.mp4 | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} segment_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+      # Upload ONLY the finished segment (~10-40 MB) — never the PNGs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.idx }}
+          path: crashv2/remotion/chunk-${{ matrix.idx }}.mp4
+          retention-days: 7
+  finalize:
+    needs: chunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat crashv2-bundle.part-* > crashv2-bundle.tar.gz
+          tar xzf crashv2-bundle.tar.gz
+          ls crashv2/
+      # ffmpeg/ffprobe only — grading already happened inside the chunks,
+      # and there is NO audio step: the release is the SILENT film; the
+      # locked N1 stem is muxed locally after download.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+      - uses: actions/download-artifact@v4
+        with:
+          path: chunks
+      # Join the 12 segments with the concat demuxer + STREAM COPY. All
+      # segments share identical encode parameters (profile/level/pix_fmt/
+      # fps/timescale/keyint), so no re-encode is needed or wanted.
+      - name: Concat segments (stream copy) and assert total
+        run: |
+          ls -la chunks/chunk-*/chunk-*.mp4
+          for i in 0 1 2 3 4 5 6 7 8 9 10 11; do echo "file '$PWD/chunks/chunk-$i/chunk-$i.mp4'"; done > concat.txt
+          cat concat.txt
+          ffmpeg -y -v error -f concat -safe 0 -i concat.txt -c copy CrashV2_silent.mp4
+          n=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 CrashV2_silent.mp4 | tr -cd '0-9')
+          echo "joined frames=$n expect=1500"; test "$n" = "1500"
+          d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 CrashV2_silent.mp4 | tr -cd '0-9.')
+          echo "joined duration=$d"
+          awk -v d="$d" 'BEGIN{ if (d>=49.9 && d<=50.3) { print "duration OK" } else { print "duration OUT OF RANGE"; exit 1 } }'
+          wh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 CrashV2_silent.mp4 | tr -cd '0-9,')
+          echo "video size=$wh expect=1080,1920"; test "$wh" = "1080,1920"
+          ls -la CrashV2_silent.mp4
+      - name: Publish release (SILENT film — voice muxed locally)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="crashv2-${{ github.run_number }}"
+          gh release create "$tag" CrashV2_silent.mp4 --repo ${{ github.repository }} --title "CrashV2 render ${{ github.run_number }} — He Crashed His Car on Purpose (silent)" --notes "Full animated film: per-chunk graded segments, stream-copy concat. SILENT by design — the locked N1 voice stem (master.wav, 50.000s) is muxed locally after download. QA gate passed in the finalize job (1500 frames, ~50.0s, 1080x1920)."
+          echo "RELEASE_TAG=$tag"
