@@ -1,0 +1,117 @@
+name: NY Walk Blender Render
+
+# Manual dispatch ONLY. Renders 'New York - A Walk Home' animated short:
+# scene built on the runner by projects/ny-walk/build_ny_video.py (Python,
+# GLB car + man from projects/ny-walk/assets/), 672 frames @24fps = 28.0 s,
+# 720x1280, Cycles 32 samples adaptive 0.03 + OIDN, AgX. 12 matrix jobs x
+# 56 frames. Finish assembles the silent MP4 + QA sheet and publishes a
+# Release tagged blender-ny-walk-<run_number>. No voice (visual line).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache — skipping download/extract."
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
+          fi
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Reassemble GLB assets (xz + base64 parts, md5-verified)
+        run: |
+          mkdir -p projects/ny-walk/assets
+          for f in aadmi generic_sedan suv_boxy; do
+            cat projects/ny-walk/assets_b64/$f.glb.xz.b64.part* | base64 -d | xz -d > projects/ny-walk/assets/$f.glb
+          done
+          cd projects/ny-walk/assets
+          echo "f3d92a4adec158e5153216841a796949  aadmi.glb" | md5sum -c -
+          echo "0fc72a8455df5712a68b7cc0487bdc58  generic_sedan.glb" | md5sum -c -
+          echo "b30881c84770ca74c9f70ed8fc674d0d  suv_boxy.glb" | md5sum -c -
+          ls -lh
+      - name: Build scene (bpy script, deterministic)
+        run: |
+          ./blender-4.2.3-linux-x64/blender -b --factory-startup \
+            --python projects/ny-walk/build_ny_video.py
+          ls -lh projects/ny-walk/scene.blend
+      - name: Render chunk ${{ matrix.chunk }}
+        run: |
+          START=$(( ${{ matrix.chunk }} * 56 + 1 ))
+          END=$(( (${{ matrix.chunk }} + 1) * 56 ))
+          if [ $END -gt 672 ]; then END=672; fi
+          echo "frames $START-$END"
+          mkdir -p frames
+          time ./blender-4.2.3-linux-x64/blender -b projects/ny-walk/scene.blend \
+            -o frames/f_#### -s $START -e $END -a
+          echo "frames rendered: $(ls frames/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.chunk }}
+          path: frames/*.png
+          retention-days: 1
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Assemble MP4 + QA + Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "frames downloaded: $(ls frames/*.png | wc -l)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+            tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+            export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
+          fi
+          ffmpeg -version | head -1
+          mkdir -p out
+          ffmpeg -v error -y -framerate 24 -i frames/f_%04d.png \
+            -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p \
+            -movflags +faststart \
+            "out/New-York-A-Walk-Home.mp4"
+          ffprobe -v error -show_entries format=duration -show_entries stream=codec_type,width,height,r_frame_rate -of compact "out/New-York-A-Walk-Home.mp4"
+          ffmpeg -v error -y -i "out/New-York-A-Walk-Home.mp4" -vf "fps=1,scale=180:-1,tile=7x4" -frames:v 1 out/qa_sheet.jpg
+          ls -la out/
+          TAG="blender-ny-walk-${{ github.run_number }}"
+          gh release create "$TAG" out/New-York-A-Walk-Home.mp4 out/qa_sheet.jpg \
+            --title "New York - A Walk Home (Blender run ${{ github.run_number }})" \
+            --notes "Blender 4.2 Cycles render: 672 frames @24fps (28.0 s), 720x1280, 32 samples adaptive 0.03 + OIDN, AgX, 12 parallel chunks. Fully coded Python scene + walk-cycle animation (iArt animation principles: easing, anticipation, follow-through). Silent visual line - no voice."
