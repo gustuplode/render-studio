@@ -1,0 +1,81 @@
+name: nyc-case-stills
+# NycCase — "The Murder New York Watched" (Remotion composition
+# NycCase, 1500f @30fps, 1080x1920). STAGE 1 = FRAMES ONLY: this
+# workflow renders exactly EIGHT stills with `remotion still` (the
+# rice-thief smoke-job pattern — no chunk render, no full film) and
+# publishes them as release `nyc-case-stills-1` for Abid's frameboard
+# verdict. It also runs the house colour gate (video-nyc-case/
+# colour_gate.py: sat >= 0.45, vivid >= 40%, grey <= 10% aggregate)
+# and prints the numbers into the job log.
+# Stills (frame -> beat):
+#   a kitty-fear      f258  L3 Kitty FEAR close-up (bob hair, red coat)
+#   b kitty-shock     f282  L3 Kitty SHOCK/scream close-up (skin flex)
+#   c street-wide     f335  L4 street wide, windows lit (the palette)
+#   d shouter         f368  L4 neighbour shouting from his window
+#   e hallway-shadow  f650  L7 hallway shadow play (no graphic violence)
+#   f phone-call      f748  L8 rotary-phone call (resolve)
+#   g kitty-portrait  f150  L2 Kitty calm portrait, coat + hair hero
+#   h hook-board      f1470 L15 hook board finale, fully in frame
+# Upload order matters: commit THIS file first, DISABLE the workflow,
+# upload the bundle parts, ENABLE the workflow, then re-upload the
+# LAST part to trigger exactly one run with all parts present.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "nyc-case-bundle.part-*"
+permissions:
+  contents: write
+jobs:
+  stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat nyc-case-bundle.part-* > nyc-case-bundle.tar.gz
+          tar xzf nyc-case-bundle.tar.gz
+          ls video-nyc-case/ video-nyc-case/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: video-nyc-case/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: video-nyc-case/remotion
+        run: |
+          npx -y playwright@1.49.1 install --with-deps chromium
+          ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome
+      - name: Render the 8 stills (frames only)
+        working-directory: video-nyc-case/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          echo "CHROME=$CHROME"
+          mkdir -p stills
+          npx remotion still src/index.ts NycCase stills/a-kitty-fear.png --frame=258 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/b-kitty-shock.png --frame=282 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/c-street-wide.png --frame=335 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/d-shouter.png --frame=368 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/e-hallway-shadow.png --frame=650 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/f-phone-call.png --frame=748 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/g-kitty-portrait.png --frame=150 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts NycCase stills/h-hook-board.png --frame=1470 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          ls -la stills/
+          for s in a-kitty-fear b-kitty-shock c-street-wide d-shouter e-hallway-shadow f-phone-call g-kitty-portrait h-hook-board; do test -s stills/$s.png; done
+          echo "STILLS OK: 8 frames written"
+      - name: Install python imaging stack (colour gate)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y python3-pil python3-numpy
+          python3 -c "from PIL import Image; import numpy; print('PIL+numpy OK')"
+      - name: Colour gate (house standard — numbers into the log)
+        run: |
+          python3 video-nyc-case/colour_gate.py video-nyc-case/remotion/stills/*.png
+      - name: Publish release (the 8 stills)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "nyc-case-stills-1" video-nyc-case/remotion/stills/*.png --repo ${{ github.repository }} --title "NycCase stills 1 — The Murder New York Watched (frames only)" --notes "Stage-1 frameboard stills for Abid's verdict: (a) Kitty fear CU f258, (b) Kitty shock/scream CU f282, (c) street wide lit windows f335, (d) shouter f368, (e) hallway shadow f650, (f) rotary-phone call f748, (g) Kitty portrait f150, (h) hook board f1470. Colour-gate numbers are in the job log. NO full render, NO voice yet."
+          echo "RELEASE_TAG=nyc-case-stills-1"
