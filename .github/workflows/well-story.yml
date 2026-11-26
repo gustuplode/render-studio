@@ -1,0 +1,117 @@
+name: Well Story Blender Render
+
+# Manual dispatch ONLY. Renders 'The Man Who Sold His Well' daylight story
+# short: scene built on the runner by projects/well-story/build_well_video.py
+# (Python, man GLB reassembled from projects/ny-walk/assets_b64 parts),
+# 1265 frames @24fps = 52.7 s, 720x1280, Cycles 32 samples adaptive 0.03 +
+# OIDN, AgX. ONE continuous tracking shot, animation keyed to the N1 voice
+# beats (vo/beats.json). 16 matrix jobs x 80 frames. Finish muxes the N1
+# voice mix (vo/mix.ogg.b64) and publishes a Release tagged
+# well-story-<run_number>.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      matrix:
+        chunk: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache — skipping download/extract."
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" \
+                || curl -L --retry 3 -o blender.tar.xz "https://mirror.clarkson.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
+          fi
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Reassemble man GLB (from ny-walk parts, md5-verified)
+        run: |
+          mkdir -p projects/well-story/assets
+          cat projects/ny-walk/assets_b64/aadmi.glb.xz.b64.part* | base64 -d | xz -d > projects/well-story/assets/aadmi.glb
+          cd projects/well-story/assets
+          echo "f3d92a4adec158e5153216841a796949  aadmi.glb" | md5sum -c -
+          ls -lh
+      - name: Build scene (bpy script, deterministic)
+        run: |
+          ./blender-4.2.3-linux-x64/blender -b --factory-startup \
+            --python projects/well-story/build_well_video.py
+          ls -lh projects/well-story/scene.blend
+      - name: Render chunk ${{ matrix.chunk }}
+        run: |
+          START=$(( ${{ matrix.chunk }} * 80 + 1 ))
+          END=$(( (${{ matrix.chunk }} + 1) * 80 ))
+          if [ $END -gt 1265 ]; then END=1265; fi
+          echo "frames $START-$END"
+          mkdir -p frames
+          time ./blender-4.2.3-linux-x64/blender -b projects/well-story/scene.blend \
+            -o frames/f_#### -s $START -e $END -a
+          echo "frames rendered: $(ls frames/*.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames-${{ matrix.chunk }}
+          path: frames/*.png
+          retention-days: 1
+
+  finish:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: frames-*
+          merge-multiple: true
+          path: frames
+      - name: Assemble MP4 (with N1 voice) + QA + Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "frames downloaded: $(ls frames/*.png | wc -l)"
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+          fi
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            curl -sL --retry 3 -o /tmp/ffmpeg-static.tar.xz "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+            tar -xJf /tmp/ffmpeg-static.tar.xz -C /tmp
+            export PATH="$(ls -d /tmp/ffmpeg-*-amd64-static | head -1):$PATH"
+          fi
+          ffmpeg -version | head -1
+          base64 -d projects/well-story/vo/mix.ogg.b64 > mix.ogg
+          ls -lh mix.ogg
+          mkdir -p out
+          ffmpeg -v error -y -framerate 24 -i frames/f_%04d.png -i mix.ogg \
+            -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p \
+            -c:a aac -b:a 160k -shortest -movflags +faststart \
+            "out/The-Man-Who-Sold-His-Well.mp4"
+          ffprobe -v error -show_entries format=duration -show_entries stream=codec_type,width,height,r_frame_rate -of compact "out/The-Man-Who-Sold-His-Well.mp4"
+          ffmpeg -v error -y -i "out/The-Man-Who-Sold-His-Well.mp4" -vf "fps=1,scale=180:-1,tile=8x7" -frames:v 1 out/qa_sheet.jpg
+          ls -la out/
+          TAG="well-story-${{ github.run_number }}"
+          gh release create "$TAG" out/The-Man-Who-Sold-His-Well.mp4 out/qa_sheet.jpg \
+            --title "The Man Who Sold His Well (Blender run ${{ github.run_number }})" \
+            --notes "Blender 4.2 Cycles render: 1265 frames @24fps (52.6 s), 720x1280, 32 samples adaptive 0.03 + OIDN, AgX, 16 parallel chunks. Daylight trick story, ONE continuous tracking shot (no cuts), character animation from skills (planted-feet walk, heel-toe roll, counter-rotation, moving holds, gestures) keyed to the N1 voice beats. Voice: Muse TTS avocado_v2:casper_1_25x, EN, speed 118, 52.63 s, -14.45 LUFS."
