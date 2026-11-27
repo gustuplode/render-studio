@@ -1,0 +1,247 @@
+name: nyc-2026-render
+# Nyc2026 — "He Picked the Wrong Pocket in New York" (Remotion
+# composition Nyc2026, 1500f @30fps, 1080x1920). New combined
+# standard: real-3D world (GLB/HDRI/PBR, CrashV2 engine) + trick-line
+# round-head cast and V4 camera; voice = N1 (locked).
+# Modelled on the PROVEN crashv2-render workflow design (per-chunk
+# finish). The release asset is the SILENT joined MP4; the final mix
+# (video-nyc-2026/audio/mix.ogg, -14.05 LUFS, N1 stem + SFX) is muxed LOCALLY
+# after download, exactly as crashv2 did with its master stem.
+# DESIGN: each CHUNK job finishes its own segment end to end (render
+# PNGs -> verify count -> grade its own frames with grade_nyc.py
+# k=2.6 -> encode a silent segment MP4 -> verify segment frame count)
+# and uploads ONLY that segment (~10-40 MB). Raw PNG artifacts (~4 GB)
+# are never uploaded. FINALIZE concatenates the 12 segments with
+# STREAM COPY (no re-encode — every segment uses byte-identical encode
+# parameters, fixed below), asserts 1500 frames / ~50.0s / 1080x1920,
+# and publishes the release `nyc-2026-<run number>` with the silent
+# MP4.
+# Segment encode parameters (IDENTICAL in every chunk — do not vary):
+#   libx264 preset slow crf 17, yuv420p, profile high, level 4.2,
+#   30 fps, keyint -g 250 -keyint_min 250 -sc_threshold 0 (a 125-frame
+#   segment gets exactly one keyframe, at its head — clean concat
+#   joins), -video_track_timescale 30000 (each frame = exactly 1000
+#   ticks, so the stream-copy concat sums to exactly 50.000s).
+# Frame-count verification is done the FIXED way everywhere: ffprobe
+# is installed (apt ffmpeg) BEFORE any ffprobe step, counts are
+# stripped to digits with `tr -cd '0-9'` before comparison.
+# Frame files are matched with PADDED globs (element-*.png) — the
+# crashv2 runs #1-2 lesson (Remotion zero-pads to the widest index).
+# Upload order matters: commit THIS file first, DISABLE the workflow,
+# upload the bundle parts, ENABLE the workflow, then re-upload the
+# LAST part to trigger exactly one run with all parts present.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "nyc-2026-bundle.part-*"
+permissions:
+  contents: write
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat nyc-2026-bundle.part-* > nyc-2026-bundle.tar.gz
+          tar xzf nyc-2026-bundle.tar.gz
+          ls video-nyc-2026/ video-nyc-2026/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: video-nyc-2026/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: video-nyc-2026/remotion
+        run: |
+          npx -y playwright@1.49.1 install --with-deps chromium
+          ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome
+      - name: Smoke stills (WebGL proof, 3 frames)
+        working-directory: video-nyc-2026/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          echo "CHROME=$CHROME"
+          for f in 150 650 1470; do
+            npx remotion still src/index.ts Nyc2026 smoke-f$f.png --frame=$f --scale=0.5 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          done
+          ls -la smoke-f*.png
+          for f in 150 650 1470; do test -s smoke-f$f.png; done
+          echo "SMOKE OK: WebGL context works, 3 distinct stills written"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-stills
+          path: video-nyc-2026/remotion/smoke-f*.png
+  chunk:
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { idx: 0, frames: "0-124", start: 0, expect: "125" }
+          - { idx: 1, frames: "125-249", start: 125, expect: "125" }
+          - { idx: 2, frames: "250-374", start: 250, expect: "125" }
+          - { idx: 3, frames: "375-499", start: 375, expect: "125" }
+          - { idx: 4, frames: "500-624", start: 500, expect: "125" }
+          - { idx: 5, frames: "625-749", start: 625, expect: "125" }
+          - { idx: 6, frames: "750-874", start: 750, expect: "125" }
+          - { idx: 7, frames: "875-999", start: 875, expect: "125" }
+          - { idx: 8, frames: "1000-1124", start: 1000, expect: "125" }
+          - { idx: 9, frames: "1125-1249", start: 1125, expect: "125" }
+          - { idx: 10, frames: "1250-1374", start: 1250, expect: "125" }
+          - { idx: 11, frames: "1375-1499", start: 1375, expect: "125" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat nyc-2026-bundle.part-* > nyc-2026-bundle.tar.gz
+          tar xzf nyc-2026-bundle.tar.gz
+          ls video-nyc-2026/ video-nyc-2026/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: video-nyc-2026/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: video-nyc-2026/remotion
+        run: npx -y playwright@1.49.1 install --with-deps chromium
+      # Image-sequence render: writes element-<absolute frame>.png per frame
+      # into the output directory (shape + naming proven locally).
+      - name: Render chunk (PNG frame sequence)
+        working-directory: video-nyc-2026/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          npx remotion render src/index.ts Nyc2026 chunk-${{ matrix.idx }} --sequence --frames=${{ matrix.frames }} --image-format=png --gl=angle --timeout=600000 --concurrency=2 --browser-executable=$CHROME
+      # Frame-count verify: count PNG files, digits-only via tr. No ffprobe
+      # needed here.
+      - name: Verify chunk frame count
+        working-directory: video-nyc-2026/remotion
+        run: |
+          n=$(ls chunk-${{ matrix.idx }}/*.png | wc -l | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} png_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+      # ffmpeg for the segment encode + ffprobe verify; python3-pil +
+      # python3-numpy via apt for grade_nyc.py (avoids the PEP 668 pip
+      # block on Ubuntu 24.04; apt is the inkbeat-proven install route).
+      # This step runs BEFORE any ffprobe use — ffprobe is never assumed.
+      - name: Install ffmpeg + python imaging stack
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg python3-pil python3-numpy
+          ffmpeg -version | head -1
+          python3 -c "from PIL import Image; import numpy; print('PIL+numpy OK')"
+      # Grade this chunk's own frames in place (project grade, k=2.6).
+      - name: Grade chunk frames
+        run: |
+          for f in video-nyc-2026/remotion/chunk-${{ matrix.idx }}/element-*.png; do python3 video-nyc-2026/grade_nyc.py "$f" "$f"; done
+          echo "graded: $(ls video-nyc-2026/remotion/chunk-${{ matrix.idx }}/*.png | wc -l | tr -cd '0-9') frames"
+      # Encode the graded frames into this chunk's silent segment.
+      # RUN #1 FAILURE (chunk 0 only, 2026-11-25 02:26 IST): ffmpeg exit
+      # 254 = AVERROR(ENOENT) — image2's find_image_range found NO file
+      # in the start range 0-4. RUN #2 (2026-11-25 03:27 IST) NAMED THE
+      # BUG in its log: the post-grade guard itself failed first, on
+      # `test -s .../element-0.png` — a name that NEVER EXISTS on CI.
+      # Remotion writes frame files ZERO-PADDED to the digit width of the
+      # range's last frame (renderer get-frame-padded-index.js:
+      # pad = String(lastFrame).length): chunk 0 (0-124) writes
+      # element-000.png..element-124.png. ffmpeg 6.1.1 then looks for the
+      # literal element-0.png and finds nothing — that was run #1's
+      # ENOENT too, NOT a runner-side frame loss (the earlier "transient
+      # loss" theory in crashv2 FIX_REPORT §1 is WRONG and superseded).
+      # The earlier local tests were fooled because they rendered ranges
+      # 0-4 (pad length 1, so element-0.png genuinely exists) or 725-739
+      # (already 3 digits, so padding is invisible) — never a 0-based
+      # range ending in a 3-digit frame. Never test naming with a small
+      # range again: always prove with PADDED filenames (crashv2 FIX_REPORT).
+      # This step is hardened: (1) -start_number is gone entirely —
+      # frames are renumbered to a 1-based zero-padded sequence
+      # (symlinks, numeric order via ls -v) and encoded from %04d.png,
+      # so there is no chunk-specific input difference at all (and no
+      # -pattern_type glob — lexical sort would scramble element-9 vs
+      # element-100); (2) a post-grade guard re-counts the frames and
+      # checks the ACTUAL first file (glob, ls -v | head -1) is present
+      # and non-empty BEFORE ffmpeg runs, so a repeat fails loudly here
+      # with the real filename in the message instead of ffmpeg's
+      # cryptic ENOENT. Encode parameters are IDENTICAL for every chunk
+      # (see header) so finalize can concat with stream copy. No audio
+      # in segments. Proven locally with padded names: chunk-0 5-frame
+      # segment and chunk-6 15-frame regression, both 100% (crashv2 FIX_REPORT).
+      - name: Encode chunk segment (silent MP4)
+        run: |
+          n=$(ls video-nyc-2026/remotion/chunk-${{ matrix.idx }}/element-*.png | wc -l | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} post-grade png_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+          first=$(ls -v video-nyc-2026/remotion/chunk-${{ matrix.idx }}/element-*.png | head -1)
+          test -s "$first" || { echo "ERROR: first frame $first missing/unreadable after grade"; exit 1; }
+          rm -rf video-nyc-2026/remotion/chunk-${{ matrix.idx }}-seq
+          mkdir -p video-nyc-2026/remotion/chunk-${{ matrix.idx }}-seq
+          i=1
+          for f in $(ls -v video-nyc-2026/remotion/chunk-${{ matrix.idx }}/element-*.png); do
+            ln -s "$PWD/$f" "video-nyc-2026/remotion/chunk-${{ matrix.idx }}-seq/$(printf '%04d.png' "$i")"
+            i=$((i + 1))
+          done
+          ffmpeg -y -v error -framerate 30 -i video-nyc-2026/remotion/chunk-${{ matrix.idx }}-seq/%04d.png -c:v libx264 -preset slow -crf 17 -pix_fmt yuv420p -profile:v high -level:v 4.2 -r 30 -g 250 -keyint_min 250 -sc_threshold 0 -video_track_timescale 30000 video-nyc-2026/remotion/chunk-${{ matrix.idx }}.mp4
+          ls -la video-nyc-2026/remotion/chunk-${{ matrix.idx }}.mp4
+      # Segment frame-count verify via ffprobe, digits-only via tr.
+      - name: Verify segment frame count
+        run: |
+          n=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 video-nyc-2026/remotion/chunk-${{ matrix.idx }}.mp4 | tr -cd '0-9')
+          echo "chunk ${{ matrix.idx }} segment_frames=$n expect=${{ matrix.expect }}"
+          test "$n" = "${{ matrix.expect }}"
+      # Upload ONLY the finished segment (~10-40 MB) — never the PNGs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.idx }}
+          path: video-nyc-2026/remotion/chunk-${{ matrix.idx }}.mp4
+          retention-days: 7
+  finalize:
+    needs: chunk
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat nyc-2026-bundle.part-* > nyc-2026-bundle.tar.gz
+          tar xzf nyc-2026-bundle.tar.gz
+          ls video-nyc-2026/
+      # ffmpeg/ffprobe only — grading already happened inside the chunks,
+      # and there is NO audio step: the release is the SILENT film; the
+      # locked N1 stem is muxed locally after download.
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+      - uses: actions/download-artifact@v4
+        with:
+          path: chunks
+      # Join the 12 segments with the concat demuxer + STREAM COPY. All
+      # segments share identical encode parameters (profile/level/pix_fmt/
+      # fps/timescale/keyint), so no re-encode is needed or wanted.
+      - name: Concat segments (stream copy) and assert total
+        run: |
+          ls -la chunks/chunk-*/chunk-*.mp4
+          for i in 0 1 2 3 4 5 6 7 8 9 10 11; do echo "file '$PWD/chunks/chunk-$i/chunk-$i.mp4'"; done > concat.txt
+          cat concat.txt
+          ffmpeg -y -v error -f concat -safe 0 -i concat.txt -c copy Nyc2026_silent.mp4
+          n=$(ffprobe -v error -select_streams v:0 -count_frames -show_entries stream=nb_read_frames -of csv=p=0 Nyc2026_silent.mp4 | tr -cd '0-9')
+          echo "joined frames=$n expect=1500"; test "$n" = "1500"
+          d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 Nyc2026_silent.mp4 | tr -cd '0-9.')
+          echo "joined duration=$d"
+          awk -v d="$d" 'BEGIN{ if (d>=49.9 && d<=50.3) { print "duration OK" } else { print "duration OUT OF RANGE"; exit 1 } }'
+          wh=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 Nyc2026_silent.mp4 | tr -cd '0-9,')
+          echo "video size=$wh expect=1080,1920"; test "$wh" = "1080,1920"
+          ls -la Nyc2026_silent.mp4
+      - name: Publish release (SILENT film — voice muxed locally)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="nyc-2026-1"
+          gh release create "$tag" Nyc2026_silent.mp4 --repo ${{ github.repository }} --title "Nyc2026 render 1 — He Picked the Wrong Pocket in New York (silent)" --notes "NYC 2026 daylight trick story: continuous tracking camera (one clean cut on the L12 line boundary), collision-gated path (0 intersections), no-freeze life layer, per-chunk graded segments, stream-copy concat. SILENT by design — the locked N1 voice mix (mix.ogg, -14.10 LUFS, 50.000s) is muxed locally after download. QA gate passed in the finalize job (1500 frames, ~50.0s, 1080x1920). Known residual: see PREP_REPORT.md (F1 texture-boiling metric on SwiftShader stills). "
+          echo "RELEASE_TAG=$tag"
