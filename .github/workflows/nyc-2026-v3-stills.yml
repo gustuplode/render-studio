@@ -1,0 +1,66 @@
+name: nyc-2026-v3-stills
+# Nyc2026 V3 — HAND-FEEL FIX PASS, frames-only stills job.
+# Renders ONLY two proof stills of composition Nyc2026 at full
+# resolution (1080x1920, scale 1): f681 (old man, "just smiles" —
+# the flat stop-palm frame) and f827 (Danny, "freezes" — the
+# mannequin-stance / floating-wallet / duffel frame), and publishes
+# them as release `nyc-2026-v3stills-1` (assets f681.png, f827.png).
+# Modelled on the proven nyc-2026-render smoke job (same bundle
+# reassembly, Node 22, npm ci, Playwright full Chromium, same
+# `remotion still` command + --gl=angle). NO chunk/finalize jobs —
+# this workflow never renders the film.
+# Upload order (same discipline as the render workflows): commit
+# THIS file to .github/workflows/nyc-2026-v3-stills.yml first,
+# DISABLE the workflow, upload the bundle parts
+# (nyc-2026-v3-bundle.part-00..03) to the repo root, ENABLE the
+# workflow, then re-upload the LAST part (or use Run workflow) to
+# trigger exactly one run with all parts present.
+# The stills are RAW (ungraded), exactly like the local proofs_v3
+# set Abid judged — grade locally with grade_nyc.py if a board
+# needs the finish look.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "nyc-2026-v3-bundle.part-*"
+permissions:
+  contents: write
+jobs:
+  stills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and unpack project bundle
+        run: |
+          cat nyc-2026-v3-bundle.part-* > nyc-2026-v3-bundle.tar.gz
+          tar xzf nyc-2026-v3-bundle.tar.gz
+          ls video-nyc-2026/ video-nyc-2026/remotion/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        working-directory: video-nyc-2026/remotion
+        run: npm ci --no-audit --no-fund
+      - name: Install full Chromium (Playwright) for WebGL
+        working-directory: video-nyc-2026/remotion
+        run: |
+          npx -y playwright@1.49.1 install --with-deps chromium
+          ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome
+      - name: Render proof stills f681 + f827 (full res 1080x1920)
+        working-directory: video-nyc-2026/remotion
+        run: |
+          CHROME=$(ls -d $HOME/.cache/ms-playwright/chromium-*/chrome-linux/chrome | head -1)
+          echo "CHROME=$CHROME"
+          npx remotion still src/index.ts Nyc2026 f681.png --frame=681 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          npx remotion still src/index.ts Nyc2026 f827.png --frame=827 --gl=angle --timeout=600000 --browser-executable=$CHROME
+          ls -la f681.png f827.png
+          test -s f681.png && test -s f827.png
+          echo "STILLS OK: both proof frames written"
+      - name: Publish release (2 proof stills)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="nyc-2026-v3stills-1"
+          gh release create "$tag" video-nyc-2026/remotion/f681.png video-nyc-2026/remotion/f827.png --repo ${{ github.repository }} --title "Nyc2026 V3 hand-feel fix — proof stills f681 + f827" --notes "Frames-only proof of the V3 hand/pose fix pass: finger-level relaxed hands on all characters (de-splay + curl profile + thumb opposition, grip deepening on held props), hand props on the correct pose-space hand (hot dog fix), Danny freeze rework (hands stay on the wallet, uneven weight shift), old-man bite suppressed during the L6 smile, carried duffel re-hung along Danny's side with a readable strap. Locked layers untouched (script, V2 voice stem + 1750f timings, beats, set, END RULE). RAW stills, ungraded. See PREP_REPORT_V3STILLS.md in boards-nyc-2026/."
+          echo "RELEASE_TAG=$tag"
