@@ -177,6 +177,8 @@ function buildServer(): McpServer {
 
   s.tool("auth_status", "Check server-side GitHub App configuration WITHOUT exposing any secret", {}, async () => {
     return ok({
+      auth_mode: cfg.fallbackToken ? "fine-grained-token" : cfg.appId ? "github-app" : "none",
+      token_configured: Boolean(cfg.fallbackToken),
       app_id_configured: Boolean(cfg.appId),
       private_key_configured: Boolean(cfg.privateKey),
       installation_id_configured: Boolean(cfg.installationId),
@@ -192,7 +194,7 @@ function buildServer(): McpServer {
 // ---- HTTP layer: bearer auth, Origin check, /health, stateless Streamable HTTP ----
 const app = express();
 app.use(express.json({ limit: "2mb" }));
-app.get("/health", (_req, res) => res.json({ ok: true, service: "chatgpt-github-dev-bridge", github_app_configured: Boolean(cfg.appId && cfg.privateKey && cfg.installationId) }));
+app.get("/health", (_req, res) => res.json({ ok: true, service: "chatgpt-github-dev-bridge", github_configured: Boolean(cfg.fallbackToken || (cfg.appId && cfg.privateKey && cfg.installationId)), github_auth_mode: cfg.fallbackToken ? "fine-grained-token" : cfg.appId ? "github-app" : "none" }));
 
 function authorized(req: express.Request): boolean {
   if (!MCP_TOKEN) return true; // local dev only — startup logs a loud warning

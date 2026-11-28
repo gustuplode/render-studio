@@ -39,7 +39,10 @@ export function assertSafePath(p: string) {
 let cached: { token: string; expiresAt: number } | null = null;
 
 export async function getToken(cfg: Config): Promise<string> {
-  if (cfg.fallbackToken && !cfg.appId) return cfg.fallbackToken;
+  // Token mode takes priority when GITHUB_TOKEN is set: a fine-grained PAT
+  // scoped to the allowed repo(s) is a supported alternative to App auth
+  // (used when the App private key cannot be entered into the host's env UI).
+  if (cfg.fallbackToken) return cfg.fallbackToken;
   if (!cfg.appId || !cfg.privateKey || !cfg.installationId) {
     throw new Error(
       "GitHub App credentials missing on the server. Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY and GITHUB_APP_INSTALLATION_ID as deployment secrets. Authentication has NOT been faked."
