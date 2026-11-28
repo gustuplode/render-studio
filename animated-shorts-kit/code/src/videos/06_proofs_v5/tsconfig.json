@@ -1,0 +1,1 @@
+{"extends": "../../../tsconfig.json", "compilerOptions": {"paths": {"@story/*": ["./*"]}, "noEmit": true}, "include": ["../../engine/**/*", "./**/*", "../../Root.tsx", "../../index.ts"]}
