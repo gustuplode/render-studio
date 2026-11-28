@@ -1,0 +1,89 @@
+name: Kit Render (animated-shorts-kit)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: 'Scene folder under animated-shorts-kit/code/src/videos/'
+        required: true
+        default: '01_example'
+      frame:
+        description: 'Frame number for a still'
+        required: false
+        default: '60'
+      comp:
+        description: 'Composition: Preview (540x960) or Video (1080x1920)'
+        required: true
+        default: 'Preview'
+        type: choice
+        options: [Preview, Video]
+      mode:
+        description: 'still = one PNG frame, video = full MP4'
+        required: true
+        default: 'still'
+        type: choice
+        options: [still, video]
+
+permissions:
+  contents: write
+
+jobs:
+  kit-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: animated-shorts-kit/code
+    env:
+      VIDEO: ${{ inputs.video }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: animated-shorts-kit/code/package-lock.json
+      - name: Cache node_modules + Remotion browser
+        uses: actions/cache@v4
+        with:
+          path: |
+            animated-shorts-kit/code/node_modules
+            ~/.cache/remotion
+          key: kit-deps-${{ hashFiles('animated-shorts-kit/code/package-lock.json') }}
+      - name: Install dependencies
+        run: |
+          if [ -d node_modules/remotion ]; then echo "node_modules from cache"; else npm ci --no-audit --no-fund; fi
+          ls node_modules | wc -l
+      - name: Chromium system libraries (Remotion on Linux)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libnss3 libdbus-1-3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 libatspi2.0-0 > /dev/null 2>&1 || true
+          echo "libs step done"
+      - name: Ensure Remotion browser
+        run: npx remotion browser ensure
+      - name: Render still (one PNG frame)
+        if: inputs.mode == 'still'
+        run: |
+          mkdir -p out
+          npx remotion still src/index.ts "${{ inputs.comp }}" out/frame.png --frame=${{ inputs.frame }}
+          ls -lh out/ && test -s out/frame.png
+      - name: Render video (MP4)
+        if: inputs.mode == 'video'
+        run: |
+          mkdir -p out
+          npx remotion render src/index.ts "${{ inputs.comp }}" out/video.mp4 --codec h264 --concurrency=2
+          ls -lh out/ && test -s out/video.mp4
+      - name: Publish result as Release (bridge-readable download URL)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="kit-${{ inputs.video }}-run${{ github.run_number }}"
+          if [ "${{ inputs.mode }}" = "still" ]; then FILE="out/frame.png"; else FILE="out/video.mp4"; fi
+          gh release create "$TAG" "$FILE" --title "Kit render: ${{ inputs.video }} (${{ inputs.mode }}, run ${{ github.run_number }})" --notes "Scene: ${{ inputs.video }} | comp: ${{ inputs.comp }} | frame: ${{ inputs.frame }} | workflow run ${{ github.run_number }}"
+      - name: Upload artifact (backup copy)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kit-${{ inputs.video }}-${{ inputs.mode }}-run${{ github.run_number }}
+          path: animated-shorts-kit/code/out/*
+          retention-days: 7
