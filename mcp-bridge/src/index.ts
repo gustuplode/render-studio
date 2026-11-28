@@ -211,8 +211,32 @@ function authorized(req: express.Request): boolean {
   });
 }
 
-app.post("/mcp", async (req, res) => {
-  if (!authorized(req)) { res.status(401).json({ error: "Unauthorized: missing/invalid MCP bearer token" }); return; }
+// --- OAuth discovery stubs (MCP spec 2025-03-26+) ---------------------------
+// ChatGPT's connector UI probes these before connecting. This server does NOT
+// run an OAuth flow: authorization_servers is empty, so a client that supports
+// "OAuth or no authentication" falls back to no-auth, and the shared token
+// rides in the connector URL (?key=). Without these endpoints ChatGPT shows
+// "Couldn't discover OAuth settings" even in mixed mode.
+function baseUrl(req: express.Request): string {
+  return `${req.protocol}://${req.get("host")}`;
+}
+function protectedResource(req: express.Request, res: express.Response) {
+  res.json({
+    resource: `${baseUrl(req)}/mcp`,
+    authorization_servers: [],
+    bearer_methods_supported: ["header", "query"],
+    resource_name: "ChatGPT GitHub Dev Bridge",
+  });
+}
+app.get("/.well-known/oauth-protected-resource", protectedResource);
+app.get("/.well-known/oauth-protected-resource/mcp", protectedResource);
+app.get("/.well-known/oauth-authorization-server", (_req, res) => res.status(404).json({ error: "This server does not offer OAuth; use the connector URL with its key." }));
+
+async function handleMcp(req: express.Request, res: express.Response) {
+  if (!authorized(req)) {
+    res.set("WWW-Authenticate", `Bearer resource_metadata="${baseUrl(req)}/.well-known/oauth-protected-resource"`);
+    res.status(401).json({ error: "Unauthorized: missing/invalid MCP bearer token" }); return;
+  }
   const origin = req.header("origin");
   if (origin && !/^https:\/\//.test(origin) && !/^http:\/\/localhost/.test(origin)) { res.status(403).json({ error: "Forbidden origin" }); return; }
   try {
@@ -225,7 +249,12 @@ app.post("/mcp", async (req, res) => {
     audit({ error: e.message });
     if (!res.headersSent) res.status(500).json({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null });
   }
-});
+}
+app.post("/mcp", handleMcp);
+// Also accept MCP at the site root: if the connector URL is saved without the
+// /mcp path, ChatGPT would otherwise probe "/" and report "endpoint not found".
+app.post("/", handleMcp);
+app.get("/", (_req, res) => res.json({ ok: true, service: "chatgpt-github-dev-bridge", mcp_endpoint: "/mcp", health: "/health" }));
 app.get("/mcp", (_req, res) => res.status(405).json({ error: "Method not allowed: use POST (stateless Streamable HTTP)" }));
 app.delete("/mcp", (_req, res) => res.status(405).json({ error: "Method not allowed" }));
 
