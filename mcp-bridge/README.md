@@ -67,13 +67,31 @@ cp .env.example .env   # fill locally only; .env is git-ignored
 npm run build && npm start        # http://localhost:8080/mcp , GET /health
 ```
 
-## Deploy (free/low-cost, real options)
+## Deploy on Render (free) — exact steps
 
-- **Render (free)**: this repo has `render.yaml` + `Dockerfile`. Create a Web
-  Service from the repo, set the 4 secrets in the dashboard
-  (`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`
-  — paste the PEM; single-line with `\n` escapes also works — and
-  `MCP_AUTH_TOKEN`). Free tier sleeps after ~15 min idle (~1 min wake).
+A Blueprint file sits at the **repo root** (`render.yaml`, service root =
+`mcp-bridge/`), so setup is one flow:
+
+1. Open https://dashboard.render.com/blueprint/new?repo=https://github.com/gustuplode/render-studio
+   and sign in / sign up (free), connect GitHub if asked.
+2. Render reads `render.yaml` and proposes the service
+   `chatgpt-github-mcp-bridge`. It will ask for the secret env vars
+   (marked `sync: false`) — fill exactly these:
+   - `GITHUB_APP_ID` — your GitHub App's App ID (or Client ID)
+   - `GITHUB_APP_INSTALLATION_ID` — the installation ID (number in the URL
+     when you open the app's installation on render-studio)
+   - `GITHUB_APP_PRIVATE_KEY` — paste the **whole .pem file content**,
+     including `-----BEGIN RSA PRIVATE KEY-----` … `-----END RSA PRIVATE KEY-----`
+     (single-line with `\n` escapes also works)
+   - `MCP_AUTH_TOKEN` — invent one long random secret (e.g. 32+ characters).
+     You will use the same value in the ChatGPT connector URL (next section).
+3. Apply / Create. First build takes a few minutes. Your endpoint becomes
+   `https://chatgpt-github-mcp-bridge.onrender.com/mcp` (Render shows the
+   real hostname — use that, it may differ slightly).
+4. Check `https://<host>/health` → `{"ok":true,...,"github_app_configured":true}`.
+   If `github_app_configured` is false, one of the 3 App secrets is missing/wrong.
+
+Free tier sleeps after ~15 min idle (~1 min wake on first call).
 - **Fly.io (~$2/mo)**: always-on, `fly launch` with the same Dockerfile + secrets.
 - Endpoint will be `https://<your-host>/mcp`. No URL exists until *you* deploy —
   none is invented here.
@@ -86,12 +104,15 @@ continue”, Create. (Developer Mode is no longer required first.)
 
 Authentication reality:
 - ChatGPT offers **OAuth** or **No authentication** (or mixed) for custom MCP —
-  **not** a static bearer/API-key field. This server's bearer mode works with
-  other MCP clients. For ChatGPT choose one of:
-  1. **No authentication** + keep the URL private (weakest — anyone with the URL
-     can call tools; the repo allowlist still limits blast radius), or
-  2. Put an OAuth-capable proxy/gateway in front, or
-  3. Use OpenAI's **Secure MCP Tunnel** instead of a public deployment.
+  **not** a static bearer/API-key field. This server therefore accepts the
+  token **inside the connector URL**: use
+  `https://<host>/mcp?key=<your MCP_AUTH_TOKEN>` as the server URL in ChatGPT
+  with authentication = **No authentication**. The URL lives only in your
+  ChatGPT account — never share or publish it; anyone holding it can call the
+  tools (still limited to ALLOWED_REPOS). Header-capable MCP clients use
+  `Authorization: Bearer <token>` on the plain `/mcp` URL instead. Rotate by
+  changing `MCP_AUTH_TOKEN` on Render and updating the connector URL.
+  Alternatives: an OAuth proxy in front, or OpenAI's Secure MCP Tunnel.
 - Plan reality (OpenAI help, Nov 2026): **Business and Enterprise/Edu get full
   MCP including write tools; Pro is read/fetch only; Plus support for custom
   MCP creation is not clearly documented.** If your plan is Pro/Plus, expect

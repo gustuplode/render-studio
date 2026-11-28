@@ -1,0 +1,20 @@
+# Render Blueprint for the ChatGPT-GitHub MCP bridge.
+# The render-studio repo hosts many projects; this service builds ONLY mcp-bridge/.
+services:
+  - type: web
+    name: chatgpt-github-mcp-bridge
+    env: docker
+    plan: free
+    rootDir: mcp-bridge
+    healthCheckPath: /health
+    envVars:
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_INSTALLATION_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: MCP_AUTH_TOKEN
+        sync: false
+      - key: ALLOWED_REPOS
+        value: gustuplode/render-studio

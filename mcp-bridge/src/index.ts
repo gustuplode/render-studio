@@ -196,10 +196,17 @@ app.get("/health", (_req, res) => res.json({ ok: true, service: "chatgpt-github-
 
 function authorized(req: express.Request): boolean {
   if (!MCP_TOKEN) return true; // local dev only — startup logs a loud warning
+  // Two ways in: (1) Authorization: Bearer <token> for header-capable MCP clients;
+  // (2) ?key=<token> in the URL — ChatGPT's custom-MCP UI has no bearer field
+  // (OAuth / No-auth only), so the token rides inside the private connector URL
+  // the user saves in their own ChatGPT account. Never publish that URL.
   const h = req.header("authorization") || "";
-  const given = Buffer.from(h.replace(/^Bearer\s+/i, ""));
+  const candidates = [h.replace(/^Bearer\s+/i, ""), String(req.query.key || "")];
   const want = Buffer.from(MCP_TOKEN);
-  return given.length === want.length && timingSafeEqual(given, want);
+  return candidates.some((c) => {
+    const given = Buffer.from(c);
+    return given.length === want.length && timingSafeEqual(given, want);
+  });
 }
 
 app.post("/mcp", async (req, res) => {
