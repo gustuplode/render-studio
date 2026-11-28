@@ -1,0 +1,51 @@
+name: Single Frame Proof (Blender Farm)
+
+on:
+  push:
+    branches: [proof-single-frame]
+    paths:
+      - '.github/workflows/single-frame-proof.yml'
+      - 'projects/single-frame-proof/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render-single-frame:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Blender tarball
+        uses: actions/cache@v4
+        with:
+          path: blender.tar.xz
+          key: blender-4.2.3-linux-x64
+      - name: Cache Blender 4.2.3 (extracted dir)
+        uses: actions/cache@v4
+        with:
+          path: blender-4.2.3-linux-x64
+          key: blender-4.2.3-linux-x64-extracted-v1
+      - name: Download + extract Blender 4.2.3
+        run: |
+          if [ -x blender-4.2.3-linux-x64/blender ]; then
+            echo "Extracted Blender restored from cache"
+          else
+            if [ ! -f blender.tar.xz ]; then
+              curl -L --retry 3 -o blender.tar.xz "https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" || curl -L --retry 3 -o blender.tar.xz "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz" || curl -L --retry 3 -o blender.tar.xz "https://ftp.nluug.nl/pub/graphics/blender/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz"
+            fi
+            tar -xJf blender.tar.xz
+          fi
+          ./blender-4.2.3-linux-x64/blender --version
+      - name: Render one farm frame (Cycles)
+        run: |
+          ./blender-4.2.3-linux-x64/blender -b -P projects/single-frame-proof/farm_scene.py
+          ls -lh out/
+          test -s out/farm_frame.png
+      - name: Upload rendered frame
+        uses: actions/upload-artifact@v4
+        with:
+          name: farm-frame
+          path: out/farm_frame.png
+          retention-days: 7
