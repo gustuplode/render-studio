@@ -193,6 +193,7 @@ function buildServer(): McpServer {
 
 // ---- HTTP layer: bearer auth, Origin check, /health, stateless Streamable HTTP ----
 const app = express();
+app.set("trust proxy", true); // Render terminates TLS: honour X-Forwarded-Proto so discovery metadata uses https:// URLs
 app.use(express.json({ limit: "2mb" }));
 app.get("/health", (_req, res) => res.json({ ok: true, service: "chatgpt-github-dev-bridge", github_configured: Boolean(cfg.fallbackToken || (cfg.appId && cfg.privateKey && cfg.installationId)), github_auth_mode: cfg.fallbackToken ? "fine-grained-token" : cfg.appId ? "github-app" : "none" }));
 
